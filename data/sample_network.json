@@ -1,0 +1,85 @@
+{
+  "network_name": "Midwest Manufacturing OEM — Multi-Tier Supply Network",
+  "description": "Sample 12-node, 4-tier supply network for a mid-size US manufacturer. Includes domestic, Chinese, Taiwanese, Vietnamese, and DRC suppliers.",
+  "created": "2026-02-12",
+  "nodes": [
+    {"id": "OEM", "name": "Midwest Manufacturing Co (OEM)", "tier": 0, "type": "focal", "region": "US-Illinois", "revenue": 50000000, "employees": 200},
+    {"id": "T1-A", "name": "Precision Machining Co", "tier": 1, "type": "supplier", "region": "US-Ohio", "revenue": 12000000, "employees": 85, "spend": 3200000, "on_time_rate": 0.94, "financial_health": 0.70, "geopolitical_risk": 0.10, "weather_risk": 0.20, "concentration_risk": 0.30, "tariff_exposure": 0.10},
+    {"id": "T1-B", "name": "ElectroParts International", "tier": 1, "type": "supplier", "region": "China-Shenzhen", "revenue": 45000000, "employees": 350, "spend": 5800000, "on_time_rate": 0.87, "financial_health": 0.60, "geopolitical_risk": 0.80, "weather_risk": 0.30, "concentration_risk": 0.70, "tariff_exposure": 0.90},
+    {"id": "T1-C", "name": "MidWest Castings LLC", "tier": 1, "type": "supplier", "region": "US-Indiana", "revenue": 8000000, "employees": 45, "spend": 1900000, "on_time_rate": 0.91, "financial_health": 0.50, "geopolitical_risk": 0.10, "weather_risk": 0.40, "concentration_risk": 0.40, "tariff_exposure": 0.05},
+    {"id": "T1-D", "name": "Pacific Polymers Ltd", "tier": 1, "type": "supplier", "region": "Vietnam-HCMC", "revenue": 22000000, "employees": 180, "spend": 2400000, "on_time_rate": 0.89, "financial_health": 0.65, "geopolitical_risk": 0.40, "weather_risk": 0.60, "concentration_risk": 0.50, "tariff_exposure": 0.40},
+    {"id": "T2-A1", "name": "RareEarth Mining Corp", "tier": 2, "type": "supplier", "region": "China-Inner Mongolia", "revenue": 180000000, "employees": 2000, "spend": 0, "on_time_rate": 0.82, "financial_health": 0.80, "geopolitical_risk": 0.90, "weather_risk": 0.20, "concentration_risk": 0.90, "tariff_exposure": 0.95},
+    {"id": "T2-A2", "name": "Steel Solutions LLC", "tier": 2, "type": "supplier", "region": "US-Pennsylvania", "revenue": 35000000, "employees": 150, "spend": 0, "on_time_rate": 0.93, "financial_health": 0.55, "geopolitical_risk": 0.10, "weather_risk": 0.15, "concentration_risk": 0.20, "tariff_exposure": 0.15},
+    {"id": "T2-B1", "name": "ChipFab Taiwan", "tier": 2, "type": "supplier", "region": "Taiwan-Hsinchu", "revenue": 500000000, "employees": 5000, "spend": 0, "on_time_rate": 0.96, "financial_health": 0.90, "geopolitical_risk": 0.85, "weather_risk": 0.50, "concentration_risk": 0.80, "tariff_exposure": 0.70},
+    {"id": "T2-C1", "name": "Scrap Metal Exchange", "tier": 2, "type": "supplier", "region": "US-Michigan", "revenue": 5000000, "employees": 20, "spend": 0, "on_time_rate": 0.88, "financial_health": 0.35, "geopolitical_risk": 0.05, "weather_risk": 0.30, "concentration_risk": 0.15, "tariff_exposure": 0.05},
+    {"id": "T3-A", "name": "Congo Cobalt Mining", "tier": 3, "type": "supplier", "region": "DRC-Katanga", "revenue": 50000000, "employees": 800, "spend": 0, "on_time_rate": 0.75, "financial_health": 0.30, "geopolitical_risk": 0.95, "weather_risk": 0.40, "concentration_risk": 0.95, "tariff_exposure": 0.30},
+    {"id": "T3-B", "name": "Lithium Americas Corp", "tier": 3, "type": "supplier", "region": "Chile-Atacama", "revenue": 120000000, "employees": 600, "spend": 0, "on_time_rate": 0.90, "financial_health": 0.70, "geopolitical_risk": 0.30, "weather_risk": 0.50, "concentration_risk": 0.60, "tariff_exposure": 0.20},
+    {"id": "DIST", "name": "National Distribution Co", "tier": -1, "type": "distributor", "region": "US-National", "revenue": 200000000, "employees": 1500},
+    {"id": "CUST", "name": "End Customers (B2B)", "tier": -2, "type": "customer", "region": "US-National", "revenue": 0, "employees": 0}
+  ],
+  "edges": [
+    {"source": "T1-A", "target": "OEM", "weight": 0.80, "type": "direct-supply", "annual_value": 3200000},
+    {"source": "T1-B", "target": "OEM", "weight": 0.90, "type": "direct-supply", "annual_value": 5800000},
+    {"source": "T1-C", "target": "OEM", "weight": 0.60, "type": "direct-supply", "annual_value": 1900000},
+    {"source": "T1-D", "target": "OEM", "weight": 0.70, "type": "direct-supply", "annual_value": 2400000},
+    {"source": "T2-A1", "target": "T1-B", "weight": 0.95, "type": "material-supply"},
+    {"source": "T2-A1", "target": "T1-A", "weight": 0.30, "type": "material-supply"},
+    {"source": "T2-A2", "target": "T1-A", "weight": 0.70, "type": "material-supply"},
+    {"source": "T2-A2", "target": "T1-C", "weight": 0.80, "type": "material-supply"},
+    {"source": "T2-B1", "target": "T1-B", "weight": 0.90, "type": "component-supply"},
+    {"source": "T2-C1", "target": "T1-C", "weight": 0.50, "type": "material-supply"},
+    {"source": "T3-A", "target": "T2-A1", "weight": 0.80, "type": "raw-material"},
+    {"source": "T3-A", "target": "T2-B1", "weight": 0.40, "type": "raw-material"},
+    {"source": "T3-B", "target": "T2-A1", "weight": 0.60, "type": "raw-material"},
+    {"source": "T3-B", "target": "T2-B1", "weight": 0.50, "type": "raw-material"},
+    {"source": "OEM", "target": "DIST", "weight": 1.00, "type": "distribution"},
+    {"source": "DIST", "target": "CUST", "weight": 1.00, "type": "sales"}
+  ],
+  "scenarios": [
+    {
+      "id": "tariff_china_25",
+      "name": "25% China Tariff Escalation",
+      "description": "New 25% tariff on all Chinese imports effective immediately",
+      "affected_nodes": ["T1-B", "T2-A1", "T2-B1"],
+      "min_delay": 7, "mode_delay": 21, "max_delay": 90,
+      "expedite_threshold": 14, "stockout_threshold": 30,
+      "quality_impact_prob": 0.10
+    },
+    {
+      "id": "taiwan_strait",
+      "name": "Taiwan Strait Crisis",
+      "description": "Military escalation blocks Taiwan shipping lanes",
+      "affected_nodes": ["T2-B1", "T1-B"],
+      "min_delay": 28, "mode_delay": 45, "max_delay": 120,
+      "expedite_threshold": 14, "stockout_threshold": 21,
+      "quality_impact_prob": 0.05
+    },
+    {
+      "id": "supplier_bankruptcy",
+      "name": "Tier-2 Supplier Bankruptcy",
+      "description": "Steel Solutions LLC enters Chapter 11",
+      "affected_nodes": ["T2-A2"],
+      "min_delay": 30, "mode_delay": 60, "max_delay": 180,
+      "expedite_threshold": 7, "stockout_threshold": 14,
+      "quality_impact_prob": 0.30
+    },
+    {
+      "id": "flood_vietnam",
+      "name": "Vietnam Monsoon Flooding",
+      "description": "Severe flooding disrupts Pacific Polymers production",
+      "affected_nodes": ["T1-D"],
+      "min_delay": 10, "mode_delay": 21, "max_delay": 45,
+      "expedite_threshold": 10, "stockout_threshold": 25,
+      "quality_impact_prob": 0.20
+    },
+    {
+      "id": "cobalt_crisis",
+      "name": "DRC Cobalt Export Ban",
+      "description": "Congo halts cobalt exports for 90 days",
+      "affected_nodes": ["T3-A"],
+      "min_delay": 45, "mode_delay": 90, "max_delay": 180,
+      "expedite_threshold": 30, "stockout_threshold": 45,
+      "quality_impact_prob": 0.05
+    }
+  ]
+}
