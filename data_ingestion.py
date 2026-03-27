@@ -156,10 +156,47 @@ OPTIONAL_COLUMNS = {
         "description": "Tariff exposure (0-1, higher = more exposed)",
         "default": 0.3,
     },
+    "compliance_score": {
+        "aliases": [
+            "compliance_score", "regulatory_compliance", "compliance_rating",
+            "regulatory_score", "regulatory_adherence_score", "adherence_score"
+        ],
+        "dtype": "float",
+        "description": "Regulatory compliance score (0-1, higher = more compliant)",
+        "default": 0.7,
+    },
+    "dependency_score": {
+        "aliases": [
+            "dependency_score", "sole_source_risk", "supplier_dependency",
+            "dependency", "sole_source", "concentration_risk"
+        ],
+        "dtype": "float",
+        "description": "Supplier dependency / sole-source risk (0-1, higher = more dependent)",
+        "default": 0.3,
+    },
+    "sub_tier_count": {
+        "aliases": [
+            "sub_tier_count", "tier_2_suppliers", "sub_suppliers",
+            "sub_tier_suppliers", "n_sub_tiers", "subtier_count"
+        ],
+        "dtype": "float",
+        "description": "Number of sub-tier (Tier-2) suppliers",
+        "default": 3.0,
+    },
+    "criticality": {
+        "aliases": [
+            "criticality", "business_criticality", "strategic_importance",
+            "supplier_criticality", "risk_category", "risk_classification",
+            "importance_level"
+        ],
+        "dtype": "str",
+        "description": "Business criticality classification (e.g. High / Medium / Low)",
+        "default": "Medium",
+    },
     "certifications": {
         "aliases": [
             "certifications", "certs", "certificates", "certifications_held",
-            "quality_certifications", "compliance"
+            "quality_certifications"
         ],
         "dtype": "str",
         "description": "Certifications (comma-separated)",
