@@ -20,6 +20,16 @@ import plotly.graph_objects as go
 import plotly.express as px
 import json
 from pathlib import Path
+from datetime import datetime
+
+from data_ingestion import (
+    ingest_file, generate_sample_template,
+    dataframe_to_network_nodes,
+)
+from news_intelligence import (
+    run_sentinel_scan,
+    SEVERITY_COLORS, SEVERITY_ICONS, DISRUPTION_ICONS,
+)
 
 # Import risk models
 from models.sir_propagation import (
@@ -187,7 +197,40 @@ def get_scorecard_data() -> pd.DataFrame:
     """
     Sample supplier data for decision intelligence scorecard.
     In production, this would connect to ERP/procurement systems.
+    Returns uploaded data when available, otherwise demo data.
     """
+    if st.session_state.get("using_uploaded_data") and st.session_state.get("uploaded_supplier_df") is not None:
+        df = st.session_state.uploaded_supplier_df.copy()
+        rename_map = {
+            "supplier_name":       "Supplier",
+            "country":             "Country",
+            "unit_cost":           "Unit_Cost",
+            "quality_score":       "Quality_Score",
+            "on_time_delivery_pct":"On_Time_Delivery_Pct",
+            "defect_rate_pct":     "Defect_Rate_Pct",
+            "risk_score":          "Risk_Score",
+            "certifications":      "Certifications",
+            "years_in_business":   "Years_In_Business",
+            "annual_volume":       "Annual_Volume",
+        }
+        df = df.rename(columns=rename_map)
+        defaults = {
+            "Supplier":             "Unknown",
+            "Country":              "Unknown",
+            "Unit_Cost":            10.0,
+            "Quality_Score":        75.0,
+            "On_Time_Delivery_Pct": 85.0,
+            "Defect_Rate_Pct":      2.0,
+            "Risk_Score":           40.0,
+            "Certifications":       "",
+            "Years_In_Business":    5.0,
+            "Annual_Volume":        10000,
+        }
+        for col, default in defaults.items():
+            if col not in df.columns:
+                df[col] = default
+        return df
+
     data = {
         "Supplier": [
             "Apex Manufacturing (Mexico)",
@@ -282,6 +325,18 @@ def calculate_switching_cost(annual_volume, unit_cost):
     return qualification + ramp_up + learning_curve
 
 
+# ─── SESSION STATE ───────────────────────────────────────────────
+
+if "uploaded_supplier_df" not in st.session_state:
+    st.session_state.uploaded_supplier_df = None
+if "using_uploaded_data" not in st.session_state:
+    st.session_state.using_uploaded_data = False
+if "sentinel_results" not in st.session_state:
+    st.session_state.sentinel_results = []
+if "last_scan_time" not in st.session_state:
+    st.session_state.last_scan_time = None
+
+
 # ═══════════════════════════════════════════════════════════════════
 # LOAD DATA
 # ═══════════════════════════════════════════════════════════════════
@@ -317,6 +372,17 @@ with st.sidebar:
     st.metric("Network Resilience", f"{resilience['resilience_score']:.0f}/100")
 
     st.divider()
+    if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
+        n_up = len(st.session_state.uploaded_supplier_df)
+        st.success(f"✅ Live data: {n_up} suppliers")
+        if st.button("↩️ Reset to demo data", use_container_width=True):
+            st.session_state.using_uploaded_data = False
+            st.session_state.uploaded_supplier_df = None
+            st.rerun()
+    else:
+        st.info("📁 Using demo data\nUpload real data in **Data Upload** tab")
+
+    st.divider()
     st.markdown(
         "<span style='font-size:0.65rem;color:#334155;font-family:monospace;'>"
         "Models: SIR Propagation · Bayesian Risk<br>"
@@ -340,13 +406,15 @@ st.markdown(
 
 # ─── TABS ────────────────────────────────────────────────────────
 
-tab_dashboard, tab_network, tab_scenarios, tab_monte_carlo, tab_scorecard, tab_decision = st.tabs([
+tab_dashboard, tab_network, tab_scenarios, tab_monte_carlo, tab_scorecard, tab_decision, tab_upload, tab_sentinel = st.tabs([
     "📊 Risk Dashboard",
     "🕸️ Network Analysis",
     "⚡ Scenario Engine",
     "💰 Financial Impact",
     "📋 Performance Scorecard",
     "🎯 Decision Intelligence",
+    "📁 Data Upload",
+    "📡 Sentinel Agent",
 ])
 
 
@@ -1112,6 +1180,320 @@ with tab_decision:
         r4.metric("Payback Period", f"{payback_months:.1f} months")
     else:
         r4.metric("Payback Period", "N/A — no savings")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TAB 7: DATA UPLOAD
+# ═══════════════════════════════════════════════════════════════════
+
+with tab_upload:
+    st.markdown("#### 📁 Upload Your Supplier Data")
+    st.markdown(
+        "Replace the demo data with your real supplier portfolio. "
+        "Upload an Excel or CSV file — the system automatically maps your columns."
+    )
+    col_dl, col_spacer = st.columns([1, 2])
+    with col_dl:
+        try:
+            template_bytes = generate_sample_template()
+            st.download_button(
+                label="⬇️ Download Excel Template",
+                data=template_bytes,
+                file_name="supplier_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except Exception:
+            st.info("Install openpyxl for template download: pip install openpyxl")
+
+    st.markdown("---")
+    col_upload, col_info = st.columns([1.2, 1])
+    with col_upload:
+        uploaded_file = st.file_uploader(
+            "Upload Supplier Data",
+            type=["xlsx", "xls", "csv"],
+            help="Column names are auto-detected — exact match not required.",
+        )
+        if uploaded_file is not None:
+            with st.spinner("Processing your file..."):
+                file_bytes = uploaded_file.read()
+                result = ingest_file(file_bytes, uploaded_file.name)
+            if result.success:
+                st.success(f"✅ Loaded **{result.row_count} suppliers** from {uploaded_file.name}")
+                for warning in result.warnings:
+                    st.warning(f"⚠️ {warning}")
+                with st.expander("📋 Column Mapping Report", expanded=True):
+                    st.markdown("**Mapped Columns:**")
+                    for raw_col, canonical in result.column_mapping.items():
+                        st.markdown(f"  `{raw_col}` → `{canonical}`")
+                    if result.unmapped_columns:
+                        st.markdown("**Excluded (unmapped):**")
+                        for col in result.unmapped_columns:
+                            st.markdown(f"  `{col}`")
+                preview_cols = [c for c in [
+                    "supplier_name", "country", "tier", "unit_cost",
+                    "quality_score", "on_time_delivery_pct", "defect_rate_pct", "annual_spend"
+                ] if c in result.df.columns]
+                st.dataframe(
+                    result.df[preview_cols].head(10),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "unit_cost":            st.column_config.NumberColumn(format="$%.2f"),
+                        "annual_spend":         st.column_config.NumberColumn(format="$%,.0f"),
+                        "quality_score":        st.column_config.ProgressColumn(min_value=0, max_value=100),
+                        "on_time_delivery_pct": st.column_config.NumberColumn(format="%.1f%%"),
+                        "defect_rate_pct":      st.column_config.NumberColumn(format="%.2f%%"),
+                    }
+                )
+                col_act, col_cancel = st.columns(2)
+                with col_act:
+                    if st.button("🚀 Activate This Dataset", type="primary", use_container_width=True):
+                        st.session_state.uploaded_supplier_df = result.df
+                        st.session_state.using_uploaded_data = True
+                        st.success("✅ Dataset activated!")
+                        st.rerun()
+                with col_cancel:
+                    if st.session_state.using_uploaded_data:
+                        if st.button("↩️ Revert to Demo Data", use_container_width=True):
+                            st.session_state.using_uploaded_data = False
+                            st.session_state.uploaded_supplier_df = None
+                            st.rerun()
+            else:
+                for err in result.errors:
+                    st.error(f"❌ {err}")
+
+    with col_info:
+        st.markdown("#### 📖 Supported Columns")
+        st.markdown("Auto-detected from your headers — no exact match needed.")
+        col_groups = {
+            "✅ Required": {"Supplier Name": "supplier, vendor, company, manufacturer"},
+            "📊 Performance": {
+                "Quality Score (0–100)":  "quality_rating, audit_score, qms_score",
+                "On-Time Delivery %":     "otd, delivery_rate, on_time",
+                "Defect Rate %":          "defects, ppm, reject_rate, scrap_rate",
+                "Lead Time (days)":       "lead_time, turnaround_days",
+            },
+            "💰 Financial": {
+                "Unit Cost ($)":    "price, unit_price, cost_per_unit",
+                "Annual Spend ($)": "spend, total_spend, purchase_value",
+                "Annual Volume":    "quantity, units_per_year, order_volume",
+            },
+            "⚠️ Risk": {
+                "Risk Score (0–100)":       "risk_rating, risk_index",
+                "Financial Health (0–1)":   "credit_score, financial_stability",
+                "Geopolitical Risk (0–1)":  "geo_risk, political_risk",
+                "Tariff Exposure (0–1)":    "tariff_risk, trade_risk",
+            },
+            "ℹ️ Info": {
+                "Country":        "nation, region, geography, location",
+                "Tier (1/2/3)":   "supplier_tier, level",
+                "Category":       "commodity, product_type, segment",
+                "Certifications": "certs, certificates, compliance",
+            },
+        }
+        for group, cols in col_groups.items():
+            with st.expander(group, expanded=(group == "✅ Required")):
+                for col_name, aliases in cols.items():
+                    st.markdown(f"**{col_name}**")
+                    st.caption(aliases)
+
+    st.markdown("---")
+    st.markdown("#### Current Dataset")
+    if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
+        df_active = st.session_state.uploaded_supplier_df
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Suppliers", len(df_active))
+        if "country" in df_active.columns:
+            c2.metric("Countries", df_active["country"].nunique())
+        if "tier" in df_active.columns:
+            c3.metric("Tiers", df_active["tier"].nunique())
+        if "annual_spend" in df_active.columns:
+            c4.metric("Total Spend", f"${df_active['annual_spend'].sum():,.0f}")
+    else:
+        st.info("📊 Using demo data. Upload your file above to activate real data.")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TAB 8: SENTINEL AGENT
+# ═══════════════════════════════════════════════════════════════════
+
+with tab_sentinel:
+    st.markdown("#### 📡 Sentinel Agent — Supply Chain News Intelligence")
+    st.markdown(
+        "Monitors global news for supply chain disruptions and maps them to your portfolio. "
+        "Powered by **NewsAPI** + optional **AI analysis** (Claude Haiku)."
+    )
+
+    col_cfg, col_res = st.columns([1, 1.8])
+
+    with col_cfg:
+        st.markdown("**🔑 API Keys**")
+        news_api_key = st.text_input(
+            "NewsAPI Key",
+            type="password",
+            placeholder="Get free key at newsapi.org",
+        )
+        anthropic_key_sentinel = st.text_input(
+            "Anthropic Key (optional)",
+            type="password",
+            placeholder="sk-ant-... for AI-enhanced analysis",
+        )
+        st.markdown("**⚙️ Scan Settings**")
+        days_back = st.slider("Scan last N days", 1, 30, 7)
+        max_articles = st.slider("Max articles", 5, 50, 20)
+        custom_query = st.text_input("Custom query (optional)", placeholder="tariff semiconductor")
+
+        if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
+            st.success(f"✅ Matching against {len(st.session_state.uploaded_supplier_df)} real suppliers")
+        else:
+            st.info("Using demo suppliers. Upload real data for better matching.")
+
+        run_scan = st.button(
+            "📡 Run Sentinel Scan",
+            type="primary",
+            use_container_width=True,
+            disabled=(not news_api_key),
+        )
+        if not news_api_key:
+            st.caption("Enter NewsAPI key to scan")
+            with st.expander("How to get a free NewsAPI key"):
+                st.markdown("1. Go to [newsapi.org](https://newsapi.org)")
+                st.markdown("2. Click **Get API Key** (free, no credit card)")
+                st.markdown("3. Free tier: 100 requests/day")
+
+        if st.session_state.sentinel_results:
+            st.markdown("---")
+            show_severities = st.multiselect(
+                "Severity filter",
+                ["Critical", "High", "Medium", "Low"],
+                default=["Critical", "High", "Medium"],
+            )
+            show_matched_only = st.checkbox("Only supplier-matched articles", False)
+
+    with col_res:
+        if run_scan and news_api_key:
+            if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
+                scan_df = st.session_state.uploaded_supplier_df
+            else:
+                demo = get_scorecard_data()
+                scan_df = demo.rename(columns={
+                    "Supplier":             "supplier_name",
+                    "Country":              "country",
+                    "Unit_Cost":            "unit_cost",
+                    "Annual_Volume":        "annual_volume",
+                })
+                scan_df["annual_spend"] = scan_df["unit_cost"] * scan_df["annual_volume"]
+
+            with st.spinner(f"Scanning {max_articles} articles..."):
+                _sentinel_results = run_sentinel_scan(
+                    news_api_key=news_api_key,
+                    supplier_df=scan_df,
+                    anthropic_api_key=anthropic_key_sentinel or None,
+                    days_back=days_back,
+                    max_articles=max_articles,
+                    custom_query=custom_query or None,
+                )
+                st.session_state.sentinel_results = _sentinel_results
+                st.session_state.last_scan_time = datetime.utcnow()
+
+            if _sentinel_results:
+                st.success(f"✅ {len(_sentinel_results)} articles analyzed.")
+            else:
+                st.warning("No relevant articles found. Try broadening your query or increasing days.")
+
+        _results = st.session_state.sentinel_results
+        if _results:
+            if st.session_state.last_scan_time:
+                st.caption(f"Last scan: {st.session_state.last_scan_time.strftime('%Y-%m-%d %H:%M UTC')}")
+
+            n_critical  = sum(1 for r in _results if r.severity == "Critical")
+            n_high      = sum(1 for r in _results if r.severity == "High")
+            n_matched   = sum(1 for r in _results if r.affected_suppliers)
+            total_exp   = sum(r.estimated_exposure_usd for r in _results)
+
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("Articles", len(_results))
+            mc2.metric(
+                "Critical/High", n_critical + n_high,
+                delta=f"{n_critical} critical",
+                delta_color="inverse" if n_critical > 0 else "off",
+            )
+            mc3.metric("Supplier Matches", n_matched)
+            mc4.metric("Est. Exposure", f"${total_exp:,.0f}" if total_exp > 0 else "–")
+
+            st.markdown("---")
+
+            _sev_filter   = locals().get("show_severities",  ["Critical", "High", "Medium", "Low"])
+            _match_filter = locals().get("show_matched_only", False)
+            filtered = [
+                r for r in _results
+                if r.severity in _sev_filter and (not _match_filter or r.affected_suppliers)
+            ]
+
+            if not filtered:
+                st.info("No articles match the current filters.")
+            else:
+                for i, impact in enumerate(filtered):
+                    sev_icon = SEVERITY_ICONS.get(impact.severity, "⚪")
+                    dis_icon = DISRUPTION_ICONS.get(impact.disruption_type, "📦")
+                    with st.expander(
+                        f"{sev_icon} {dis_icon} {impact.article.title[:85]}...",
+                        expanded=(i < 2 and impact.severity in ["Critical", "High"]),
+                    ):
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.markdown(f"**Severity**  \n{sev_icon} {impact.severity}")
+                        m2.markdown(f"**Type**  \n{dis_icon} {impact.disruption_type}")
+                        m3.markdown(f"**Source**  \n{impact.article.source}")
+                        m4.markdown(f"**Date**  \n{impact.article.published_at.strftime('%b %d, %Y')}")
+                        st.markdown("---")
+                        if impact.affected_suppliers:
+                            st.markdown(f"**🏭 Suppliers at risk:** {', '.join(impact.affected_suppliers[:5])}")
+                        if impact.affected_countries:
+                            st.markdown(f"**🌍 Countries:** {', '.join(impact.affected_countries[:5])}")
+                        if impact.estimated_exposure_usd > 0:
+                            st.markdown(f"**💰 Estimated Exposure:** ${impact.estimated_exposure_usd:,.0f}")
+                        st.markdown(f"**Analysis:** {impact.summary}")
+                        if impact.recommended_actions:
+                            st.markdown("**✅ Actions:**")
+                            for j, action in enumerate(impact.recommended_actions[:4], 1):
+                                st.markdown(f"{j}. {action}")
+                        st.markdown(
+                            f"[🔗 Read Article]({impact.article.url})  ·  "
+                            f"Confidence: {impact.confidence}  ·  {impact.analysis_method}"
+                        )
+
+            st.markdown("---")
+            export_rows = [{
+                "Title":                  r.article.title,
+                "Source":                 r.article.source,
+                "Published":              r.article.published_at.strftime("%Y-%m-%d"),
+                "URL":                    r.article.url,
+                "Disruption Type":        r.disruption_type,
+                "Severity":               r.severity,
+                "Severity Score":         r.severity_score,
+                "Affected Suppliers":     "; ".join(r.affected_suppliers),
+                "Affected Countries":     "; ".join(r.affected_countries),
+                "Estimated Exposure ($)": r.estimated_exposure_usd,
+                "Summary":                r.summary,
+                "Top Action":             r.recommended_actions[0] if r.recommended_actions else "",
+                "Method":                 r.analysis_method,
+            } for r in _results]
+            st.download_button(
+                "⬇️ Export Sentinel Report (CSV)",
+                data=pd.DataFrame(export_rows).to_csv(index=False).encode(),
+                file_name=f"sentinel_{datetime.utcnow().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+            )
+
+        elif not run_scan:
+            st.markdown(
+                "<div style='text-align:center;padding:60px 20px;color:#475569;'>"
+                "<div style='font-size:3rem;'>📡</div>"
+                "<div style='margin-top:8px;'>Enter your NewsAPI key and click Run Sentinel Scan</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════
