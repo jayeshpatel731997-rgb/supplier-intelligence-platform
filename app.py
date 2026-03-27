@@ -1066,7 +1066,7 @@ with tab_decision:
             "Switching Cost": switching_cost,
             "Total TCO": total_tco,
             "Unit Cost": row["Unit_Cost"],
-            "Hidden Cost %": ((copq + delivery_cost) / direct_cost * 100),
+            "Hidden Cost %": ((copq + delivery_cost) / direct_cost * 100) if direct_cost > 0 else 0,
         })
 
     tco_df = pd.DataFrame(tco_rows).sort_values("Total TCO")
