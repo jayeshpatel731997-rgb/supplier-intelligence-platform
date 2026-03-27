@@ -1321,182 +1321,212 @@ with tab_upload:
 with tab_sentinel:
     st.markdown("#### 📡 Sentinel Agent — Supply Chain News Intelligence")
     st.markdown(
-        "Monitors global news for supply chain disruptions and maps them to your portfolio. "
-        "Powered by **NewsAPI** + optional **AI analysis** (Claude Haiku)."
+        "Monitors supply chain disruptions and maps them to your portfolio. "
+        "Three modes: **AI Briefing** (Claude generates portfolio-specific intelligence), "
+        "**NewsAPI** (live news, local only), or **Demo** (no key needed)."
     )
+
+    with st.expander("ℹ️ How the Sentinel Agent works (read if confused)", expanded=False):
+        st.markdown("""
+        **Why three modes?**
+        
+        Streamlit Cloud's network proxy **blocks external news APIs** (NewsAPI, Reuters, BBC, etc.).
+        This is a Streamlit Cloud infrastructure restriction, not a bug in the code.
+        
+        | Mode | Requires | Works on Streamlit Cloud? | What you get |
+        |------|----------|--------------------------|-------------|
+        | 🤖 AI Briefing | Anthropic API key | ✅ YES | Claude generates portfolio-specific intelligence |
+        | 📰 NewsAPI | NewsAPI key | ❌ Local only | Real news headlines matched to your suppliers |
+        | 🎯 Demo | Nothing | ✅ YES | 8 realistic pre-built scenarios |
+        
+        **Recommendation:** Use **AI Briefing mode** — it works everywhere AND gives better 
+        portfolio-specific insights than generic news matching.
+        """)
 
     col_cfg, col_res = st.columns([1, 1.8])
 
     with col_cfg:
-        st.markdown("**🔑 API Keys**")
-        news_api_key = st.text_input(
-            "NewsAPI Key",
-            type="password",
-            placeholder="Get free key at newsapi.org",
+        st.markdown("**⚙️ Mode Selection**")
+        sentinel_mode = st.radio(
+            "Scan Mode",
+            ["🤖 AI Intelligence Briefing", "📰 NewsAPI (local only)", "🎯 Demo Mode"],
+            help="AI Briefing uses Claude to generate portfolio-specific intelligence. Works on Streamlit Cloud.",
         )
-        anthropic_key_sentinel = st.text_input(
-            "Anthropic Key (optional)",
-            type="password",
-            placeholder="sk-ant-... for AI-enhanced analysis",
-        )
-        st.markdown("**⚙️ Scan Settings**")
-        days_back = st.slider("Scan last N days", 1, 30, 7)
-        max_articles = st.slider("Max articles", 5, 50, 20)
-        custom_query = st.text_input("Custom query (optional)", placeholder="tariff semiconductor")
-
-        if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
-            st.success(f"✅ Matching against {len(st.session_state.uploaded_supplier_df)} real suppliers")
-        else:
-            st.info("Using demo suppliers. Upload real data for better matching.")
-
-        run_scan = st.button(
-            "📡 Run Sentinel Scan",
-            type="primary",
-            use_container_width=True,
-            disabled=(not news_api_key),
-        )
-        if not news_api_key:
-            st.caption("Enter NewsAPI key to scan")
-            with st.expander("How to get a free NewsAPI key"):
-                st.markdown("1. Go to [newsapi.org](https://newsapi.org)")
-                st.markdown("2. Click **Get API Key** (free, no credit card)")
-                st.markdown("3. Free tier: 100 requests/day")
-
-        if st.session_state.sentinel_results:
-            st.markdown("---")
-            show_severities = st.multiselect(
-                "Severity filter",
-                ["Critical", "High", "Medium", "Low"],
-                default=["Critical", "High", "Medium"],
+        st.markdown("---")
+        anthropic_key_sentinel = ""
+        news_api_key = ""
+        if "AI Intelligence" in sentinel_mode:
+            st.markdown("**🔑 Anthropic API Key**")
+            anthropic_key_sentinel = st.text_input(
+                "Anthropic API Key",
+                type="password",
+                placeholder="sk-ant-...",
+                help="Claude analyzes your portfolio to generate supply chain intelligence.",
+                label_visibility="collapsed",
             )
-            show_matched_only = st.checkbox("Only supplier-matched articles", False)
+            if not anthropic_key_sentinel:
+                st.warning("Enter your Anthropic API key above to run AI briefing")
+            else:
+                st.success("✅ Ready to generate AI intelligence briefing")
+        elif "NewsAPI" in sentinel_mode:
+            st.markdown("**🔑 NewsAPI Key**")
+            news_api_key = st.text_input(
+                "NewsAPI Key",
+                type="password",
+                placeholder="Get free key at newsapi.org",
+                label_visibility="collapsed",
+            )
+            st.info("⚠️ NewsAPI only works when running **locally**. On Streamlit Cloud, use AI Briefing mode instead.")
+        else:
+            st.info("🎯 Demo mode: No API key needed. Shows 8 realistic supply chain scenarios tailored to your portfolio.")
+        st.markdown("---")
+        st.markdown("**🔍 Settings**")
+        n_events = st.slider("Number of intelligence events", 5, 20, 10)
+        custom_query = st.text_input(
+            "Focus area (optional)",
+            placeholder="e.g. tariffs, semiconductor, Mexico",
+        )
+        if st.session_state.get("using_uploaded_data") and st.session_state.get("uploaded_supplier_df") is not None:
+            n_sup = len(st.session_state.uploaded_supplier_df)
+            n_countries = st.session_state.uploaded_supplier_df["country"].nunique() if "country" in st.session_state.uploaded_supplier_df.columns else "?"
+            st.success(f"✅ Analyzing {n_sup} real suppliers across {n_countries} countries")
+        else:
+            st.info("📊 Using demo supplier portfolio. Upload real data for better matching.")
+        can_run = (
+            ("AI Intelligence" in sentinel_mode and bool(anthropic_key_sentinel)) or
+            ("NewsAPI" in sentinel_mode and bool(news_api_key)) or
+            ("Demo" in sentinel_mode)
+        )
+        run_scan = st.button("📡 Run Sentinel Scan", type="primary", use_container_width=True, disabled=not can_run)
+        if st.session_state.get("sentinel_results"):
+            st.markdown("---")
+            st.markdown("**🔽 Filter Results**")
+            show_severities = st.multiselect("Severity levels", ["Critical", "High", "Medium", "Low"], default=["Critical", "High", "Medium"])
+            show_matched_only = st.checkbox("Only supplier-matched events", False)
 
     with col_res:
-        if run_scan and news_api_key:
-            if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
-                scan_df = st.session_state.uploaded_supplier_df
+        if run_scan:
+            if st.session_state.get("using_uploaded_data") and st.session_state.get("uploaded_supplier_df") is not None:
+                scan_df = st.session_state.uploaded_supplier_df.copy()
             else:
-                demo = get_scorecard_data()
-                scan_df = demo.rename(columns={
-                    "Supplier":             "supplier_name",
-                    "Country":              "country",
-                    "Unit_Cost":            "unit_cost",
-                    "Annual_Volume":        "annual_volume",
-                })
+                demo_raw = get_scorecard_data()
+                scan_df = demo_raw.rename(columns={"Supplier": "supplier_name", "Country": "country", "Category": "category", "Unit_Cost": "unit_cost", "Annual_Volume": "annual_volume"})
                 scan_df["annual_spend"] = scan_df["unit_cost"] * scan_df["annual_volume"]
-
-            with st.spinner(f"Scanning {max_articles} articles..."):
-                _sentinel_results = run_sentinel_scan(
+            mode_map = {"🤖 AI Intelligence Briefing": "ai", "📰 NewsAPI (local only)": "newsapi", "🎯 Demo Mode": "demo"}
+            chosen_mode = mode_map.get(sentinel_mode, "demo")
+            with st.spinner("🔍 Running Sentinel scan..."):
+                impacts, mode_used, error_msg = run_sentinel_scan(
                     news_api_key=news_api_key,
                     supplier_df=scan_df,
-                    anthropic_api_key=anthropic_key_sentinel or None,
-                    days_back=days_back,
-                    max_articles=max_articles,
-                    custom_query=custom_query or None,
+                    anthropic_api_key=anthropic_key_sentinel,
+                    max_articles=n_events,
+                    custom_query=custom_query,
+                    mode=chosen_mode,
                 )
-                st.session_state.sentinel_results = _sentinel_results
+                st.session_state.sentinel_results = impacts
+                st.session_state.sentinel_mode_used = mode_used
+                st.session_state.sentinel_error = error_msg
                 st.session_state.last_scan_time = datetime.utcnow()
-
-            if _sentinel_results:
-                st.success(f"✅ {len(_sentinel_results)} articles analyzed.")
+            if error_msg:
+                st.warning(error_msg)
+            if impacts:
+                st.success(f"✅ {len(impacts)} intelligence events generated — **{mode_used}**")
             else:
-                st.warning("No relevant articles found. Try broadening your query or increasing days.")
+                st.error("No events returned. Check your API key or try Demo Mode.")
 
-        _results = st.session_state.sentinel_results
-        if _results:
-            if st.session_state.last_scan_time:
-                st.caption(f"Last scan: {st.session_state.last_scan_time.strftime('%Y-%m-%d %H:%M UTC')}")
+        results = st.session_state.get("sentinel_results", [])
+        mode_used_display = st.session_state.get("sentinel_mode_used", "")
 
-            n_critical  = sum(1 for r in _results if r.severity == "Critical")
-            n_high      = sum(1 for r in _results if r.severity == "High")
-            n_matched   = sum(1 for r in _results if r.affected_suppliers)
-            total_exp   = sum(r.estimated_exposure_usd for r in _results)
-
+        if results:
+            if st.session_state.get("last_scan_time"):
+                scan_time = st.session_state.last_scan_time.strftime("%Y-%m-%d %H:%M UTC")
+                st.caption(f"Last scan: {scan_time} · Mode: {mode_used_display}")
+            n_critical = sum(1 for r in results if r.severity == "Critical")
+            n_high = sum(1 for r in results if r.severity == "High")
+            n_matched = sum(1 for r in results if r.affected_suppliers)
+            total_exp = sum(r.estimated_exposure_usd for r in results)
             mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.metric("Articles", len(_results))
-            mc2.metric(
-                "Critical/High", n_critical + n_high,
-                delta=f"{n_critical} critical",
-                delta_color="inverse" if n_critical > 0 else "off",
-            )
+            mc1.metric("Events Analyzed", len(results))
+            mc2.metric("Critical / High", f"{n_critical} / {n_high}", delta=f"{n_critical} critical" if n_critical else None, delta_color="inverse" if n_critical > 0 else "off")
             mc3.metric("Supplier Matches", n_matched)
-            mc4.metric("Est. Exposure", f"${total_exp:,.0f}" if total_exp > 0 else "–")
-
+            mc4.metric("Est. Total Exposure", f"${total_exp:,.0f}" if total_exp > 0 else "–")
+            if "Demo" in mode_used_display:
+                st.info("🎯 **Demo mode** — these are example events to illustrate platform capabilities, not real-time news.")
+            elif "AI" in mode_used_display:
+                st.info("🤖 **AI Intelligence Briefing** — Claude synthesized these events based on your portfolio and current supply chain context.")
             st.markdown("---")
-
-            _sev_filter   = locals().get("show_severities",  ["Critical", "High", "Medium", "Low"])
-            _match_filter = locals().get("show_matched_only", False)
-            filtered = [
-                r for r in _results
-                if r.severity in _sev_filter and (not _match_filter or r.affected_suppliers)
-            ]
-
+            sev_filter = locals().get("show_severities", ["Critical", "High", "Medium", "Low"])
+            match_filter = locals().get("show_matched_only", False)
+            filtered = [r for r in results if r.severity in sev_filter and (not match_filter or r.affected_suppliers)]
             if not filtered:
-                st.info("No articles match the current filters.")
+                st.info("No events match current filters.")
             else:
+                st.markdown(f"Showing **{len(filtered)}** of {len(results)} events")
                 for i, impact in enumerate(filtered):
                     sev_icon = SEVERITY_ICONS.get(impact.severity, "⚪")
                     dis_icon = DISRUPTION_ICONS.get(impact.disruption_type, "📦")
-                    with st.expander(
-                        f"{sev_icon} {dis_icon} {impact.article.title[:85]}...",
-                        expanded=(i < 2 and impact.severity in ["Critical", "High"]),
-                    ):
+                    title_short = impact.article.title[:80] + ("..." if len(impact.article.title) > 80 else "")
+                    with st.expander(f"{sev_icon} {dis_icon} {title_short}", expanded=(i < 2 and impact.severity in ["Critical", "High"])):
                         m1, m2, m3, m4 = st.columns(4)
                         m1.markdown(f"**Severity**  \n{sev_icon} {impact.severity}")
                         m2.markdown(f"**Type**  \n{dis_icon} {impact.disruption_type}")
-                        m3.markdown(f"**Source**  \n{impact.article.source}")
+                        src_clean = impact.article.source.replace('DEMO — ', '').replace('AI Intelligence Briefing (', '').rstrip(')')
+                        m3.markdown(f"**Source**  \n{src_clean}")
                         m4.markdown(f"**Date**  \n{impact.article.published_at.strftime('%b %d, %Y')}")
                         st.markdown("---")
                         if impact.affected_suppliers:
-                            st.markdown(f"**🏭 Suppliers at risk:** {', '.join(impact.affected_suppliers[:5])}")
+                            names = ", ".join(impact.affected_suppliers[:5])
+                            extra = f" +{len(impact.affected_suppliers)-5} more" if len(impact.affected_suppliers) > 5 else ""
+                            st.markdown(f"**🏭 Affected Suppliers:** {names}{extra}")
+                        else:
+                            st.markdown("**🏭 Affected Suppliers:** None directly matched in portfolio")
                         if impact.affected_countries:
-                            st.markdown(f"**🌍 Countries:** {', '.join(impact.affected_countries[:5])}")
+                            st.markdown(f"**🌍 Countries:** {', '.join(impact.affected_countries[:6])}")
+                        if impact.affected_categories:
+                            st.markdown(f"**📦 Categories:** {', '.join(impact.affected_categories[:4])}")
                         if impact.estimated_exposure_usd > 0:
                             st.markdown(f"**💰 Estimated Exposure:** ${impact.estimated_exposure_usd:,.0f}")
-                        st.markdown(f"**Analysis:** {impact.summary}")
+                        st.markdown(f"**📝 Analysis:** {impact.summary}")
                         if impact.recommended_actions:
-                            st.markdown("**✅ Actions:**")
-                            for j, action in enumerate(impact.recommended_actions[:4], 1):
+                            st.markdown("**✅ Recommended Actions:**")
+                            for j, action in enumerate(impact.recommended_actions[:5], 1):
                                 st.markdown(f"{j}. {action}")
-                        st.markdown(
-                            f"[🔗 Read Article]({impact.article.url})  ·  "
-                            f"Confidence: {impact.confidence}  ·  {impact.analysis_method}"
-                        )
-
+                        col_link, col_conf = st.columns([2, 1])
+                        with col_link:
+                            if impact.article.url and impact.article.url != "#":
+                                st.markdown(f"[🔗 Read Full Article]({impact.article.url})")
+                        with col_conf:
+                            st.caption(f"Confidence: {impact.confidence} · {impact.analysis_method}")
             st.markdown("---")
             export_rows = [{
-                "Title":                  r.article.title,
-                "Source":                 r.article.source,
-                "Published":              r.article.published_at.strftime("%Y-%m-%d"),
-                "URL":                    r.article.url,
-                "Disruption Type":        r.disruption_type,
-                "Severity":               r.severity,
-                "Severity Score":         r.severity_score,
-                "Affected Suppliers":     "; ".join(r.affected_suppliers),
-                "Affected Countries":     "; ".join(r.affected_countries),
-                "Estimated Exposure ($)": r.estimated_exposure_usd,
-                "Summary":                r.summary,
-                "Top Action":             r.recommended_actions[0] if r.recommended_actions else "",
-                "Method":                 r.analysis_method,
-            } for r in _results]
+                "Title": r.article.title, "Source": r.article.source,
+                "Date": r.article.published_at.strftime("%Y-%m-%d"),
+                "Type": r.disruption_type, "Severity": r.severity, "Score": r.severity_score,
+                "Affected Suppliers": "; ".join(r.affected_suppliers),
+                "Countries": "; ".join(r.affected_countries),
+                "Est. Exposure ($)": r.estimated_exposure_usd,
+                "Summary": r.summary,
+                "Top Action": r.recommended_actions[0] if r.recommended_actions else "",
+                "Mode": r.analysis_method,
+            } for r in results]
             st.download_button(
                 "⬇️ Export Sentinel Report (CSV)",
                 data=pd.DataFrame(export_rows).to_csv(index=False).encode(),
-                file_name=f"sentinel_{datetime.utcnow().strftime('%Y%m%d')}.csv",
+                file_name=f"sentinel_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
             )
-
         elif not run_scan:
             st.markdown(
                 "<div style='text-align:center;padding:60px 20px;color:#475569;'>"
                 "<div style='font-size:3rem;'>📡</div>"
-                "<div style='margin-top:8px;'>Enter your NewsAPI key and click Run Sentinel Scan</div>"
-                "</div>",
+                "<div style='font-size:1.1rem;font-weight:500;margin-top:12px;'>Sentinel Agent Ready</div>"
+                "<div style='font-size:0.85rem;margin-top:10px;line-height:1.6;'>"
+                "Select a mode on the left and click <b>Run Sentinel Scan</b>.<br><br>"
+                "No API key? Choose <b>Demo Mode</b> to see example intelligence events."
+                "</div></div>",
                 unsafe_allow_html=True,
             )
 
-
-# ═══════════════════════════════════════════════════════════════════
 # FOOTER
 # ═══════════════════════════════════════════════════════════════════
 
