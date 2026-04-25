@@ -1,0 +1,238 @@
+# CLAUDE.md
+
+This file is the orientation doc for Claude (and future you) when working
+in this repo. It captures *why* things are the way they are — the kind of
+context that's invisible from reading the code alone.
+
+---
+
+## What this project is
+
+**Agentic AI Supplier Risk Intelligence System** — a research prototype
+that turns public news + a private supplier graph into a quantified
+disruption forecast and a menu of mitigation actions for a mid-size US
+manufacturer.
+
+**Status:** research prototype, moving toward pre-production. CLI works
+end-to-end; Streamlit UI live at `app.py`.
+
+**The user's preference:** explanations grounded in first principles and
+game theory; detailed answers preferred over terse ones.
+
+---
+
+## Architecture in one diagram
+
+```
+news / RSS / USGS / NewsAPI   +   data/sample_network.json
+            │                              │
+            ▼                              ▼
+   ┌──────────────────┐         ┌────────────────────┐
+   │  Sentinel Agent  │ events  │   NetworkX graph   │
+   │  (LLM classify)  │────────▶│   + centralities   │
+   └──────────────────┘         └────────────────────┘
+                                          │
+                                          ▼
+                                ┌──────────────────┐
+                                │  Mapper Agent    │
+                                │  region/keyword  │
+                                │  matching        │
+                                └──────────────────┘
+                                          │ EventNodeMapping
+                                          ▼
+                                ┌──────────────────┐
+                                │ Propagator Agent │
+                                │  SIR cascade +   │
+                                │  Monte Carlo $   │
+                                └──────────────────┘
+                                          │ CascadeResult
+                                          ▼
+                                ┌──────────────────┐
+                                │ Strategist Agent │
+                                │  rule-based      │
+                                │  mitigation menu │
+                                └──────────────────┘
+                                          │ MitigationRecommendation
+                                          ▼
+                                ┌──────────────────┐
+                                │  Narrator Agent  │
+                                │  exec brief      │
+                                │  (text template) │
+                                └──────────────────┘
+                                          │
+                                          ▼
+                            outputs/pipeline_output_*.json
+```
+
+The Orchestrator (`agents/orchestrator.py`) is intentionally thin — it
+wires the five agents together and persists results. All analysis lives
+inside the agent classes.
+
+---
+
+## Layout
+
+```
+supplier-intelligence-platform/
+├── agents/
+│   ├── __init__.py          ← exports all agent classes + result dataclasses
+│   ├── orchestrator.py      ← wiring + CLI entry point
+│   ├── sentinel.py          ← (1) detection: RSS, NewsAPI, USGS, LLM classify
+│   ├── mapper.py            ← (2) event → affected supplier nodes
+│   ├── propagator.py        ← (3) Weibull-SIR cascade + LHS financial Monte Carlo
+│   ├── strategist.py        ← (4) mitigation menu (rule-based)
+│   └── narrator.py          ← (5) executive brief (text template)
+├── models/
+│   ├── __init__.py
+│   ├── sir_propagation.py   ← SIR-on-graph cascade model
+│   ├── bayesian_risk.py     ← per-supplier posterior risk via 6 LRs
+│   ├── monte_carlo.py       ← financial Monte Carlo (VaR, CVaR) — plain MC
+│   ├── graph_metrics.py     ← centrality, SPOFs, resilience score
+│   └── nasa_upgrades.py     ← LHS + Weibull + FTA (active)
+├── data/
+│   ├── sample_network.json     ← 12-node, 4-tier sample OEM network
+│   └── lake_cable_network.json ← extended real-world scenario network
+├── tests/
+│   └── test_data_ingestion.py  ← unit tests for CSV/Excel ingestion layer
+├── app.py                   ← Streamlit UI (runs the full pipeline visually)
+├── data_ingestion.py        ← CSV/Excel → network data parser
+├── news_intelligence.py     ← news fetch + pre-processing helpers
+├── outputs/                 ← generated by orchestrator (gitignored)
+├── requirements.txt
+├── SECURITY.md              ← data classification + flow architecture
+├── CLAUDE.md                ← (this file)
+└── README.md                ← human-facing onboarding
+```
+
+---
+
+## First-principles design notes
+
+These are the load-bearing decisions. Don't undo them without understanding
+the reasoning.
+
+### Why a 5-agent split (and not one big LLM call)
+The pipeline mirrors the OODA loop: **Observe** (Sentinel) → **Orient**
+(Mapper + Propagator) → **Decide** (Strategist) → **Act** (Narrator
+hands off to a human). Splitting it lets us test each stage in isolation,
+swap implementations (e.g. a learned Strategist policy later), and keep
+the *only* LLM call inside Sentinel — which matters for the data-privacy
+contract in `SECURITY.md`.
+
+### Why SIR for supply-chain disruption
+Disruption spreads through dependency edges the way disease spreads
+through contact edges. SIR (Susceptible → Infected → Recovered) is the
+simplest model that captures the three behaviors that actually matter:
+saturation (a node can only be infected once), recovery (disruptions
+end), and tier damping (deeper-tier shocks attenuate). It is not the
+*right* model in any deep sense — it's the cheapest model that captures
+the right qualitative behavior. Anything fancier needs justification.
+
+### Why both SIR and a separate financial Monte Carlo
+SIR answers *who is touched, with what probability* — a topological
+question. The financial MC answers *what does the worst 5% of outcomes
+cost in dollars* — a tail-risk question. Combining a contagion model
+with a tail-risk dollar model is standard in catastrophic-risk modeling
+(reinsurance + epidemiology). One model can't do both well.
+
+### Why CVaR₉₅ is the headline financial number, not Expected Loss
+Game theory: a procurement leader's downside is asymmetric. They get
+fired for catastrophic stockouts, not for being slightly under budget.
+CVaR (the average loss in the worst 5% of outcomes) is the right metric
+for that asymmetric payoff structure. Expected Loss is shown alongside
+for the analyst, but CVaR is the executive-facing number.
+
+### Why the Strategist returns a *menu* and not a single recommendation
+Same game-theoretic point: forcing the LLM/system to surface trade-offs
+explicitly prevents a common failure mode where it confidently picks
+one option and hides the rejected alternatives. The human PM owns the
+decision; the system owns the payoff table.
+
+### Why Bayesian risk and not a pure ML classifier
+The 6-signal Bayesian model (`models/bayesian_risk.py`) is *interpretable
+by construction* — every output has a decomposition into per-signal
+contributions and a dominant risk factor. That auditability matters more
+than a few points of ROC-AUC for a system that recommends procurement
+decisions. ML can come later as a calibration layer on the LRs.
+
+### What's in `nasa_upgrades.py`
+Three NASA/aerospace PRA techniques:
+
+- **Latin Hypercube Sampling (LHS)** — **wired into `propagator._run_financial`**.
+  Gives ~15× better CVaR convergence than plain MC with the same iteration count
+  (divides each input's range into equal-probability strata and samples exactly
+  once per stratum, eliminating clustering artifacts).
+- **Weibull failure distributions** — **wired into `sir_propagation.py` and
+  enabled by `PropagatorAgent`**. Adds time-dependent beta to the SIR model
+  (infant-mortality vs. wear-out suppliers), while static-beta SIR remains
+  available for Streamlit controls and sensitivity analysis.
+- **Fault Tree Analysis (FTA)** — **wired into `StrategistAgent`**. Decomposes
+  top-event probability (loss of supply) into basic-event contributions with
+  Fussell-Vesely importance measures, then adds the top root driver to the
+  mitigation output.
+
+---
+
+## Data privacy contract (READ BEFORE TOUCHING SENTINEL)
+
+The system has a hard rule encoded in `SECURITY.md`:
+
+> **Confidential supplier data NEVER leaves the application server.
+> Only public news text is sent to Claude API for event classification.**
+
+Concretely: the Sentinel `classify_event` prompt accepts only the news
+title, source, date, and summary — all PUBLIC class. Supplier names,
+spend, on-time rates, network topology — anything from the network
+JSON — must not be added to any LLM prompt. If you find yourself
+reaching for supplier metadata to "improve classification," that is the
+moment to stop and re-read SECURITY.md.
+
+---
+
+## How to run things
+
+```bash
+# Activate venv (Windows)
+venv\Scripts\activate
+
+# Full pipeline (uses ANTHROPIC_API_KEY if set)
+python -m agents.orchestrator
+
+# Skip LLM calls (rule-based filter only — useful for offline dev)
+python -m agents.orchestrator --no-llm
+
+# Run a pre-built scenario from the network file
+python -m agents.orchestrator --scenario tariff_china_25
+python -m agents.orchestrator --scenario taiwan_strait
+
+# Just the Sentinel scan
+python -m agents.sentinel --no-llm --output sentinel_events.json
+```
+
+Outputs land in `outputs/pipeline_output_<timestamp>.json` containing
+the events, mappings, cascades, recommendations, and rendered brief.
+
+---
+
+## Known gaps (as of 2026-04-25)
+
+- **Strategist is rule-based.** No learned policy, no LLM call. The menu
+  is good, but the ranking is heuristic.
+- **Streamlit has no browser/UI automation tests.** Core model, ingestion,
+  and agent logic have unit coverage; UI click-through remains manual.
+- **CI/linting is basic.** `pyproject.toml` and GitHub Actions exist, but
+  lint exceptions and formatting policy are intentionally minimal.
+- **Privacy Policy + ToS** still in progress (see SECURITY.md §8).
+
+---
+
+## Conventions
+
+- Python 3.11+ syntax (built-in generic types: `list[str]`, `dict[str, int]`).
+- Dataclasses for all structured outputs (use `@dataclass`, expose
+  `.to_dict()` for JSON serialization where needed).
+- Each agent is a single class in its own module under `agents/`.
+- Models stay pure (no I/O, no LLM calls); agents are the I/O boundary.
+- Severity values are always lowercase strings: `critical`, `high`,
+  `medium`, `low`, `info`.
+- Money is in raw USD floats; format only at the rendering layer.

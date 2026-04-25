@@ -14,6 +14,7 @@ import pandas as pd
 import numpy as np
 import io
 import re
+from datetime import date
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -156,10 +157,47 @@ OPTIONAL_COLUMNS = {
         "description": "Tariff exposure (0-1, higher = more exposed)",
         "default": 0.3,
     },
+    "compliance_score": {
+        "aliases": [
+            "compliance_score", "regulatory_compliance", "compliance_rating",
+            "regulatory_score", "regulatory_adherence_score", "adherence_score"
+        ],
+        "dtype": "float",
+        "description": "Regulatory compliance score (0-1, higher = more compliant)",
+        "default": 0.7,
+    },
+    "dependency_score": {
+        "aliases": [
+            "dependency_score", "sole_source_risk", "supplier_dependency",
+            "dependency", "sole_source", "concentration_risk"
+        ],
+        "dtype": "float",
+        "description": "Supplier dependency / sole-source risk (0-1, higher = more dependent)",
+        "default": 0.3,
+    },
+    "sub_tier_count": {
+        "aliases": [
+            "sub_tier_count", "tier_2_suppliers", "sub_suppliers",
+            "sub_tier_suppliers", "n_sub_tiers", "subtier_count"
+        ],
+        "dtype": "float",
+        "description": "Number of sub-tier (Tier-2) suppliers",
+        "default": 3.0,
+    },
+    "criticality": {
+        "aliases": [
+            "criticality", "business_criticality", "strategic_importance",
+            "supplier_criticality", "risk_category", "risk_classification",
+            "importance_level"
+        ],
+        "dtype": "str",
+        "description": "Business criticality classification (e.g. High / Medium / Low)",
+        "default": "Medium",
+    },
     "certifications": {
         "aliases": [
             "certifications", "certs", "certificates", "certifications_held",
-            "quality_certifications", "compliance"
+            "quality_certifications"
         ],
         "dtype": "str",
         "description": "Certifications (comma-separated)",
@@ -276,15 +314,19 @@ def _clean_numeric(series: pd.Series, col_name: str) -> pd.Series:
 
 def _apply_pct_detection(df: pd.DataFrame, col: str) -> pd.Series:
     """
-    For percentage columns (OTD, defect rate), detect if values are in 0-1 range
-    and convert to 0-100.
+    For percentage columns (OTD, defect rate), normalize mixed formats where
+    some rows are stored as decimals (0-1) and others as percentages (0-100).
     """
     series = df[col]
-    # If max value <= 1.5, it's likely stored as 0-1 decimal
     non_null = series.dropna()
-    if len(non_null) > 0 and non_null.max() <= 1.5:
-        return series * 100
-    return series
+    if len(non_null) == 0:
+        return series
+
+    # Values between 0 and 1.5 are almost always decimal percentages and
+    # should be converted row-by-row so mixed-format uploads still normalize.
+    return series.apply(
+        lambda value: value * 100 if pd.notna(value) and 0 <= value <= 1.5 else value
+    )
 
 
 def ingest_file(file_bytes: bytes, filename: str) -> IngestionResult:
@@ -489,49 +531,328 @@ def generate_sample_template() -> bytes:
     return buf.read()
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, float(value)))
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sanitize_node_id(tier: int, ordinal: int) -> str:
+    return f"T{tier}-{chr(64 + ordinal)}" if ordinal <= 26 else f"T{tier}-{ordinal}"
+
+
+def _country_risk_hint(country: str) -> tuple[float, float, float]:
+    country = (country or "").lower()
+
+    if any(token in country for token in ["china", "drc", "congo", "russia", "ukraine"]):
+        return 0.75, 0.65, 0.7
+    if any(token in country for token in ["taiwan", "peru", "mexico", "vietnam", "india", "chile"]):
+        return 0.45, 0.35, 0.35
+    if any(token in country for token in ["usa", "united states", "canada", "germany", "japan"]):
+        return 0.12, 0.18, 0.1
+    return 0.30, 0.25, 0.25
+
+
+def _infer_financial_health(row: pd.Series) -> float:
+    financial_health = _safe_float(row.get("financial_health"), 0.0)
+    if financial_health > 0:
+        return _clamp(financial_health, 0.05, 0.99)
+
+    risk_score = _safe_float(row.get("risk_score"), 50.0)
+    quality = _safe_float(row.get("quality_score"), 70.0) / 100
+    on_time = _safe_float(row.get("on_time_delivery_pct"), 85.0) / 100
+    health = (1 - risk_score / 100) * 0.5 + quality * 0.2 + on_time * 0.3
+    return _clamp(health, 0.1, 0.95)
+
+
+def _infer_concentration_risk(row: pd.Series, category_counts: dict, total_spend: float) -> float:
+    dependency = _safe_float(row.get("dependency_score"), -1.0)
+    if dependency >= 0:
+        return _clamp(dependency, 0.05, 0.99)
+
+    category = row.get("category", "Uncategorized")
+    peers = category_counts.get(category, 1)
+    spend_share = 0.0
+    annual_spend = _safe_float(row.get("annual_spend"), 0.0)
+    if total_spend > 0:
+        spend_share = annual_spend / total_spend
+
+    base = {1: 0.85, 2: 0.60, 3: 0.42}.get(peers, 0.28)
+    return _clamp(base + spend_share * 0.35, 0.1, 0.95)
+
+
+def _edge_weight_from_spend(spend: float, max_spend: float) -> float:
+    if max_spend <= 0:
+        return 0.6
+    return _clamp(0.35 + 0.63 * (spend / max_spend), 0.35, 0.98)
+
+
+def _link_similarity(child: dict, parent: dict) -> float:
+    score = 0.0
+    if child.get("category") == parent.get("category"):
+        score += 0.45
+    if child.get("country") == parent.get("country"):
+        score += 0.20
+    if child.get("tier") == parent.get("tier", 0) + 1:
+        score += 0.20
+    score += min(parent.get("spend", 0.0) / max(child.get("spend", 1.0), 1.0), 2.0) * 0.05
+    return score
+
+
+def _generate_uploaded_scenarios(supplier_nodes: list[dict], edges: list[dict]) -> list[dict]:
+    if not supplier_nodes:
+        return []
+
+    node_map = {node["id"]: node for node in supplier_nodes}
+    upstream = {}
+    for edge in edges:
+        upstream.setdefault(edge["source"], set()).add(edge["target"])
+        upstream.setdefault(edge["target"], set()).add(edge["source"])
+
+    def scenario_nodes(primary_id: str) -> list[str]:
+        primary = node_map[primary_id]
+        related = [primary_id]
+        for node in supplier_nodes:
+            if node["id"] == primary_id:
+                continue
+            if node.get("category") == primary.get("category") or node.get("region") == primary.get("region"):
+                related.append(node["id"])
+            if len(related) >= 3:
+                break
+        for neighbor in upstream.get(primary_id, set()):
+            if neighbor in node_map and neighbor not in related:
+                related.append(neighbor)
+            if len(related) >= 3:
+                break
+        return related[:3]
+
+    ranked = {
+        "tariff": max(supplier_nodes, key=lambda n: n.get("tariff_exposure", 0.0)),
+        "geopolitical": max(supplier_nodes, key=lambda n: n.get("geopolitical_risk", 0.0)),
+        "weather": max(supplier_nodes, key=lambda n: n.get("weather_risk", 0.0)),
+        "concentration": max(supplier_nodes, key=lambda n: n.get("concentration_risk", 0.0)),
+        "financial": min(supplier_nodes, key=lambda n: n.get("financial_health", 1.0)),
+    }
+
+    scenario_specs = [
+        (
+            "tariff",
+            "Tariff Shock on Critical Import Lane",
+            "Tariff escalation increases landed costs and customs delays for a highly exposed supplier lane.",
+            (10, 24, 60, 14, 28, 0.08),
+        ),
+        (
+            "geopolitical",
+            "Geopolitical Disruption in a High-Risk Region",
+            "Political instability or sanctions interrupt supplier operations and export reliability.",
+            (14, 35, 90, 14, 30, 0.06),
+        ),
+        (
+            "weather",
+            "Severe Weather / Natural Disaster Event",
+            "Flooding, storms, or port disruption slow production and logistics for weather-exposed suppliers.",
+            (7, 18, 45, 10, 24, 0.12),
+        ),
+        (
+            "concentration",
+            "Single-Source Supplier Outage",
+            "A concentrated supplier fails, creating outsized flow disruption due to limited alternatives.",
+            (14, 30, 75, 10, 21, 0.18),
+        ),
+        (
+            "financial",
+            "Supplier Financial Distress",
+            "A financially weak supplier triggers shipment instability, quality escapes, and recovery delays.",
+            (21, 45, 120, 14, 30, 0.20),
+        ),
+    ]
+
+    scenarios = []
+    for idx, (metric_name, name, description, params) in enumerate(scenario_specs, start=1):
+        primary = ranked[metric_name]
+        scenarios.append({
+            "id": f"uploaded_{metric_name}_{idx}",
+            "name": name,
+            "description": f"{description} Primary trigger: {primary['name']} ({primary['region']}).",
+            "affected_nodes": scenario_nodes(primary["id"]),
+            "min_delay": params[0],
+            "mode_delay": params[1],
+            "max_delay": params[2],
+            "expedite_threshold": params[3],
+            "stockout_threshold": params[4],
+            "quality_impact_prob": params[5],
+        })
+
+    return scenarios
+
+
+def dataframe_to_network_data(
+    df: pd.DataFrame,
+    company_name: str = "Focal Company (OEM)",
+) -> dict:
+    """
+    Convert uploaded supplier rows into a complete network payload that
+    the existing app and models can use directly.
+    """
+    if df is None or len(df) == 0:
+        return {
+            "network_name": "Uploaded Supplier Network",
+            "description": "Generated network from uploaded supplier data.",
+            "created": str(date.today()),
+            "nodes": [],
+            "edges": [],
+            "scenarios": [],
+        }
+
+    work_df = df.copy()
+    work_df["tier"] = work_df["tier"].fillna(1).clip(lower=1).astype(int)
+    work_df["annual_spend"] = work_df["annual_spend"].fillna(0.0)
+    work_df["category"] = work_df["category"].fillna("Uncategorized")
+    work_df["country"] = work_df["country"].fillna("Unknown")
+    work_df = work_df.sort_values(["tier", "annual_spend", "supplier_name"], ascending=[True, False, True]).reset_index(drop=True)
+
+    total_spend = max(_safe_float(work_df["annual_spend"].sum()), 1.0)
+    max_spend = _safe_float(work_df["annual_spend"].max(), 0.0)
+    category_counts = work_df["category"].value_counts(dropna=False).to_dict()
+    tier_counters = {}
+    supplier_nodes = []
+
+    for _, row in work_df.iterrows():
+        tier = max(int(row.get("tier", 1)), 1)
+        tier_counters[tier] = tier_counters.get(tier, 0) + 1
+        node_id = _sanitize_node_id(tier, tier_counters[tier])
+
+        spend = _safe_float(row.get("annual_spend"), 0.0)
+        if spend <= 0:
+            spend = _safe_float(row.get("unit_cost"), 0.0) * _safe_float(row.get("annual_volume"), 0.0)
+
+        geo_hint, weather_hint, tariff_hint = _country_risk_hint(row.get("country", ""))
+        node = {
+            "id": node_id,
+            "name": str(row.get("supplier_name", node_id)),
+            "type": "supplier",
+            "tier": tier,
+            "region": str(row.get("country", "Unknown")),
+            "country": str(row.get("country", "Unknown")),
+            "category": str(row.get("category", "Uncategorized")),
+            "spend": spend,
+            "annual_volume": _safe_float(row.get("annual_volume"), 0.0),
+            "unit_cost": _safe_float(row.get("unit_cost"), 0.0),
+            "on_time_rate": _clamp(_safe_float(row.get("on_time_delivery_pct"), 85.0) / 100, 0.05, 0.999),
+            "financial_health": _infer_financial_health(row),
+            "geopolitical_risk": _clamp(
+                _safe_float(row.get("geopolitical_risk"), geo_hint if row.get("geopolitical_risk") is not None else geo_hint),
+                0.01,
+                0.99,
+            ),
+            "weather_risk": _clamp(weather_hint + (_safe_float(row.get("lead_time_days"), 30.0) / 1200), 0.05, 0.95),
+            "concentration_risk": _infer_concentration_risk(row, category_counts, total_spend),
+            "tariff_exposure": _clamp(
+                _safe_float(row.get("tariff_exposure"), tariff_hint if row.get("tariff_exposure") is not None else tariff_hint),
+                0.01,
+                0.99,
+            ),
+            "notes": str(row.get("notes", "")),
+        }
+        supplier_nodes.append(node)
+
+    nodes = [
+        {
+            "id": "OEM",
+            "name": company_name,
+            "type": "focal",
+            "tier": 0,
+            "region": "US-Primary",
+            "spend": 0,
+            "on_time_rate": 1.0,
+            "financial_health": 1.0,
+            "geopolitical_risk": 0.0,
+            "weather_risk": 0.0,
+            "concentration_risk": 0.0,
+            "tariff_exposure": 0.0,
+        },
+        *supplier_nodes,
+        {
+            "id": "DIST",
+            "name": "Distribution Network",
+            "type": "distributor",
+            "tier": -1,
+            "region": "Multi-Region",
+        },
+        {
+            "id": "CUST",
+            "name": "End Customers",
+            "type": "customer",
+            "tier": -2,
+            "region": "Multi-Region",
+        },
+    ]
+
+    edges = []
+
+    tier_one_nodes = [node for node in supplier_nodes if node["tier"] == 1]
+    if not tier_one_nodes:
+        tier_one_nodes = supplier_nodes[:]
+
+    for node in tier_one_nodes:
+        edges.append({
+            "source": node["id"],
+            "target": "OEM",
+            "weight": _edge_weight_from_spend(node.get("spend", 0.0), max_spend),
+            "type": "direct-supply",
+            "annual_value": node.get("spend", 0.0),
+        })
+
+    for node in supplier_nodes:
+        if node["tier"] <= 1:
+            continue
+
+        candidate_parents = [parent for parent in supplier_nodes if parent["tier"] == node["tier"] - 1]
+        if not candidate_parents:
+            candidate_parents = [parent for parent in supplier_nodes if parent["tier"] < node["tier"]]
+
+        if not candidate_parents:
+            edges.append({
+                "source": node["id"],
+                "target": "OEM",
+                "weight": 0.45,
+                "type": "direct-supply",
+                "annual_value": node.get("spend", 0.0),
+            })
+            continue
+
+        ranked_parents = sorted(candidate_parents, key=lambda parent: _link_similarity(node, parent), reverse=True)
+        max_links = 2 if len(ranked_parents) > 1 else 1
+        for parent in ranked_parents[:max_links]:
+            edges.append({
+                "source": node["id"],
+                "target": parent["id"],
+                "weight": _clamp(0.35 + _link_similarity(node, parent), 0.25, 0.95),
+                "type": "material-supply",
+            })
+
+    edges.append({"source": "OEM", "target": "DIST", "weight": 1.0, "type": "distribution"})
+    edges.append({"source": "DIST", "target": "CUST", "weight": 1.0, "type": "sales"})
+
+    return {
+        "network_name": "Uploaded Supplier Network",
+        "description": "Generated from uploaded supplier data. Upstream edges and scenarios are inferred to keep analytics runnable end to end.",
+        "created": str(date.today()),
+        "nodes": nodes,
+        "edges": edges,
+        "scenarios": _generate_uploaded_scenarios(supplier_nodes, edges),
+    }
+
+
 def dataframe_to_network_nodes(df: pd.DataFrame) -> list:
     """
-    Convert ingested supplier DataFrame to the network node format
-    expected by the existing risk models (sample_network.json format).
+    Backward-compatible helper retained for older call sites.
     """
-    nodes = []
-    for _, row in df.iterrows():
-        # Map risk_score (0-100) to financial_health (0-1, inverted)
-        fin_health = row.get("financial_health", 0.6)
-        if pd.isna(fin_health) or fin_health == 0.0:
-            # Estimate from risk score
-            fin_health = max(0.1, 1.0 - row["risk_score"] / 100)
-
-        node = {
-            "id": re.sub(r'[^a-zA-Z0-9]', '', row["supplier_name"])[:12].upper(),
-            "name": row["supplier_name"],
-            "type": "supplier",
-            "tier": int(row.get("tier", 1)),
-            "region": row.get("country", "Unknown"),
-            "spend": float(row.get("annual_spend", 0)),
-            "on_time_rate": float(row.get("on_time_delivery_pct", 85)) / 100,
-            "financial_health": float(fin_health),
-            "geopolitical_risk": float(row.get("geopolitical_risk", 0.3)),
-            "weather_risk": 0.2,  # default
-            "concentration_risk": 0.3,  # default
-            "tariff_exposure": float(row.get("tariff_exposure", 0.3)),
-        }
-        nodes.append(node)
-
-    # Add default OEM node
-    nodes.append({
-        "id": "OEM",
-        "name": "Focal Company (OEM)",
-        "type": "focal",
-        "tier": 0,
-        "region": "USA",
-        "spend": 0,
-        "on_time_rate": 1.0,
-        "financial_health": 1.0,
-        "geopolitical_risk": 0.0,
-        "weather_risk": 0.0,
-        "concentration_risk": 0.0,
-        "tariff_exposure": 0.0,
-    })
-
-    return nodes
+    return dataframe_to_network_data(df)["nodes"]

@@ -1,9 +1,10 @@
-﻿models/nasa_upgrades.py
-__pycache__/
-*.pyc
 .env
 venv/
+__pycache__/
+**/__pycache__/
+*.pyc
 data/*.db
 data/*.db-journal
 streamlit.*.log
+.git/
 tests/.tmp_*

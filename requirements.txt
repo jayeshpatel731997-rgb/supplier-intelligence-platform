@@ -7,6 +7,7 @@ scipy>=1.11.0
 
 # AI / LLM
 anthropic>=0.40.0
+openai>=1.0.0
 
 # Data & Visualization
 plotly>=5.18.0

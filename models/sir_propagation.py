@@ -21,10 +21,19 @@ import networkx as nx
 from dataclasses import dataclass, field
 from typing import Optional
 from enum import Enum
+
+from models.nasa_upgrades import (
+    SUPPLIER_WEIBULL_PROFILES,
+    compute_time_dependent_sir_beta,
+)
+
+
 class NodeState(Enum):
     SUSCEPTIBLE = "S"
     INFECTED = "I"
     RECOVERED = "R"
+
+
 @dataclass
 class PropagationParams:
     """Parameters for SIR propagation model."""
@@ -33,6 +42,12 @@ class PropagationParams:
     tier_damping: float = 0.85  # Amplification damping per tier distance
     time_steps: int = 30        # Simulation horizon
     edge_weight_factor: float = 1.0  # How much edge weights affect transmission
+    use_weibull_beta: bool = False   # NASA-style time-dependent beta
+    weibull_time_scale: float = 1.0  # SIR timestep -> Weibull month scale
+    default_weibull_profile: str = "established_stable"
+    weibull_profile_overrides: Optional[dict[str, str]] = None
+
+
 @dataclass
 class NodeResult:
     """Result for a single node after simulation."""
@@ -65,6 +80,77 @@ def build_networkx_graph(network_data: dict) -> nx.DiGraph:
                     weight=edge.get("weight", 1.0),
                     edge_type=edge.get("type", "supply"))
     return G
+
+
+def _infer_weibull_profile_key(node_data: dict) -> str:
+    """Infer a Weibull supplier archetype from available node signals."""
+    if node_data.get("type") != "supplier":
+        return "established_stable"
+
+    region = str(node_data.get("region", "")).lower()
+    years = node_data.get("years_in_business")
+    financial_health = float(node_data.get("financial_health", 0.65))
+    tariff_exposure = float(node_data.get("tariff_exposure", 0.0))
+    concentration_risk = float(node_data.get("concentration_risk", 0.3))
+    geopolitical_risk = float(node_data.get("geopolitical_risk", 0.3))
+
+    if ("china" in region or tariff_exposure > 0.75) and tariff_exposure > 0.55:
+        return "china_tariff_exposed"
+    if years is not None:
+        try:
+            years_float = float(years)
+            if years_float < 2:
+                return "new_unproven"
+            if years_float > 15:
+                return "aging_declining"
+        except (TypeError, ValueError):
+            pass
+    if financial_health < 0.45:
+        return "aging_declining"
+    if concentration_risk < 0.25 and geopolitical_risk < 0.25:
+        return "diversified_resilient"
+    return "established_stable"
+
+
+def _node_weibull_profile_key(
+    node_id: str,
+    node_data: dict,
+    params: PropagationParams,
+) -> str:
+    overrides = params.weibull_profile_overrides or {}
+    if node_id in overrides:
+        return overrides[node_id]
+    inferred = _infer_weibull_profile_key(node_data)
+    return inferred or params.default_weibull_profile
+
+
+def _effective_beta(
+    node_id: str,
+    node_data: dict,
+    params: PropagationParams,
+    time_step: int,
+) -> float:
+    if not params.use_weibull_beta:
+        return params.beta
+
+    profile_key = _node_weibull_profile_key(node_id, node_data, params)
+    default_profile = SUPPLIER_WEIBULL_PROFILES.get(
+        params.default_weibull_profile,
+        SUPPLIER_WEIBULL_PROFILES["established_stable"],
+    )
+    profile = SUPPLIER_WEIBULL_PROFILES.get(
+        profile_key,
+        default_profile,
+    )
+    beta_t = compute_time_dependent_sir_beta(
+        params.beta,
+        profile,
+        time_step=time_step,
+        time_scale=params.weibull_time_scale,
+    )
+    return float(np.clip(beta_t, 0.01, 0.95))
+
+
 def run_sir_simulation(
     G: nx.DiGraph,
     shocked_nodes: list[str],
@@ -130,7 +216,8 @@ def run_sir_simulation(
                             w = 0.5
 
                         tier_mult = params.tier_damping ** abs(tier)
-                        p_transmit = params.beta * tier_mult * w * params.edge_weight_factor
+                        beta_t = _effective_beta(node_id, node_data, params, t)
+                        p_transmit = beta_t * tier_mult * w * params.edge_weight_factor
                         p_transmit = min(p_transmit, 0.95)  # Cap at 95%
                         p_safe *= (1 - p_transmit)
 
@@ -301,6 +388,11 @@ def sensitivity_analysis(
             gamma=base_params.gamma,
             tier_damping=base_params.tier_damping,
             time_steps=base_params.time_steps,
+            edge_weight_factor=base_params.edge_weight_factor,
+            use_weibull_beta=base_params.use_weibull_beta,
+            weibull_time_scale=base_params.weibull_time_scale,
+            default_weibull_profile=base_params.default_weibull_profile,
+            weibull_profile_overrides=base_params.weibull_profile_overrides,
         )
         setattr(params, param_name, val)
 

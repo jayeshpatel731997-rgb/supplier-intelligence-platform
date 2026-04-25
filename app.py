@@ -19,17 +19,50 @@ import networkx as nx
 import plotly.graph_objects as go
 import plotly.express as px
 import json
+import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from data_ingestion import (
     ingest_file, generate_sample_template,
-    dataframe_to_network_nodes,
+    dataframe_to_network_data,
 )
 from news_intelligence import (
     run_sentinel_scan,
     SEVERITY_COLORS, SEVERITY_ICONS, DISRUPTION_ICONS,
 )
+from pilot_security import (
+    authenticate_user,
+    change_user_password,
+    create_user,
+    has_mutation_access,
+    init_pilot_database,
+    is_admin,
+    list_audit_logs,
+    list_sentinel_scans,
+    list_users,
+    log_audit,
+    save_sentinel_scan,
+    save_supplier_upload,
+    set_user_active,
+)
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+
+def get_secret_or_env(name: str, default: str = "") -> str:
+    """Read deployment secrets from Streamlit secrets first, then environment."""
+    try:
+        value = st.secrets.get(name, "")
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.getenv(name, default)
 
 # Import risk models
 from models.sir_propagation import (
@@ -139,10 +172,20 @@ st.markdown("""
 # DATA LOADING
 # ═══════════════════════════════════════════════════════════════════
 
+NETWORK_OPTIONS = {
+    "🏭  Lake Cable LLC (Live Demo)": "data/lake_cable_network.json",
+    "🔬  Sample Network (Synthetic)": "data/sample_network.json",
+}
+
 @st.cache_data
-def load_network():
-    with open("data/sample_network.json") as f:
+def load_network(path: str = "data/lake_cable_network.json"):
+    with open(path) as f:
         return json.load(f)
+
+
+@st.cache_data
+def build_uploaded_network(df: pd.DataFrame):
+    return dataframe_to_network_data(df)
 
 @st.cache_data
 def compute_all_risks(network_data):
@@ -337,18 +380,73 @@ if "last_scan_time" not in st.session_state:
     st.session_state.last_scan_time = None
 
 
-# ═══════════════════════════════════════════════════════════════════
-# LOAD DATA
-# ═══════════════════════════════════════════════════════════════════
+# ─── PILOT AUTHENTICATION GATE ──────────────────────────────────
 
-data = load_network()
-risk_df = compute_all_risks(data)
-G = build_networkx_graph(data)
-centralities, resilience, spofs = get_graph_metrics(data)
+pilot_db_info = init_pilot_database()
+SESSION_TIMEOUT_MINUTES = int(get_secret_or_env("SUPPLIER_APP_SESSION_TIMEOUT_MINUTES", "60"))
+
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+if "auth_last_seen" not in st.session_state:
+    st.session_state.auth_last_seen = None
+
+
+def current_user() -> dict:
+    return st.session_state.auth_user or {"username": "anonymous", "role": "viewer"}
+
+
+def can_mutate() -> bool:
+    return has_mutation_access(current_user())
+
+
+def audit(action: str, details: dict | None = None) -> None:
+    user = current_user()
+    log_audit(user["username"], user["role"], action, details or {})
+
+
+def render_login() -> None:
+    st.markdown("## Supplier Intelligence Platform")
+    st.caption("Secure internal pilot login")
+    if pilot_db_info["default_password_in_use"]:
+        st.warning(
+            "Default admin is enabled for this pilot. Login with "
+            f"`{pilot_db_info['default_admin_user']}` / `ChangeMe123!`, then change it in Admin & Audit."
+        )
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign in", type="primary")
+    if submitted:
+        user = authenticate_user(username, password)
+        if user:
+            st.session_state.auth_user = user
+            st.session_state.auth_last_seen = datetime.utcnow()
+            log_audit(user["username"], user["role"], "auth.login", {})
+            st.rerun()
+        else:
+            log_audit(username or "unknown", "unknown", "auth.failed_login", {})
+            st.error("Invalid username or password.")
+    st.stop()
+
+
+if st.session_state.auth_user is None:
+    render_login()
+
+last_seen = st.session_state.auth_last_seen
+if last_seen and datetime.utcnow() - last_seen > timedelta(minutes=SESSION_TIMEOUT_MINUTES):
+    expired_user = st.session_state.auth_user
+    if expired_user:
+        log_audit(expired_user["username"], expired_user["role"], "auth.session_timeout", {})
+    st.session_state.auth_user = None
+    st.session_state.auth_last_seen = None
+    st.warning("Session timed out. Please sign in again.")
+    render_login()
+
+st.session_state.auth_last_seen = datetime.utcnow()
 
 
 # ═══════════════════════════════════════════════════════════════════
-# SIDEBAR
+# SIDEBAR — must come before data load so we can pick network
 # ═══════════════════════════════════════════════════════════════════
 
 with st.sidebar:
@@ -358,7 +456,43 @@ with st.sidebar:
         "Risk Assessment · Decision Intelligence</span>",
         unsafe_allow_html=True,
     )
+    user = current_user()
+    st.caption(f"Signed in as `{user['username']}` · `{user['role']}`")
+    if not can_mutate():
+        st.info("Viewer mode: dashboards are read-only.")
+    if st.button("Sign out", use_container_width=True):
+        audit("auth.logout", {})
+        st.session_state.auth_user = None
+        st.session_state.auth_last_seen = None
+        st.rerun()
     st.divider()
+
+    selected_network_label = st.selectbox(
+        "**Active Network**",
+        options=list(NETWORK_OPTIONS.keys()),
+        index=0,
+        help="Switch between the live Lake Cable demo and the synthetic sample network.",
+    )
+    selected_network_path = NETWORK_OPTIONS[selected_network_label]
+    st.divider()
+
+# ═══════════════════════════════════════════════════════════════════
+# LOAD DATA
+# ═══════════════════════════════════════════════════════════════════
+
+if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
+    data = build_uploaded_network(st.session_state.uploaded_supplier_df)
+    active_network_source = "uploaded"
+else:
+    data = load_network(selected_network_path)
+    active_network_source = "demo"
+
+risk_df = compute_all_risks(data)
+G = build_networkx_graph(data)
+centralities, resilience, spofs = get_graph_metrics(data)
+
+# ─── Re-open sidebar to add network stats (now that data is loaded) ────────────
+with st.sidebar:
 
     # Network summary
     n_suppliers = len([n for n in data["nodes"] if n.get("type") == "supplier"])
@@ -375,12 +509,14 @@ with st.sidebar:
     if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
         n_up = len(st.session_state.uploaded_supplier_df)
         st.success(f"✅ Live data: {n_up} suppliers")
-        if st.button("↩️ Reset to demo data", use_container_width=True):
+        st.caption("Uploaded data is powering the full analytics network, not just the scorecard.")
+        if can_mutate() and st.button("↩️ Reset to demo data", use_container_width=True):
             st.session_state.using_uploaded_data = False
             st.session_state.uploaded_supplier_df = None
+            audit("data.reset_to_demo", {"source": "sidebar"})
             st.rerun()
     else:
-        st.info("📁 Using demo data\nUpload real data in **Data Upload** tab")
+        st.info("📁 Using demo data\nUpload real data in **Data Upload** tab to replace the full analytics network")
 
     st.divider()
     st.markdown(
@@ -406,7 +542,7 @@ st.markdown(
 
 # ─── TABS ────────────────────────────────────────────────────────
 
-tab_dashboard, tab_network, tab_scenarios, tab_monte_carlo, tab_scorecard, tab_decision, tab_upload, tab_sentinel = st.tabs([
+tab_labels = [
     "📊 Risk Dashboard",
     "🕸️ Network Analysis",
     "⚡ Scenario Engine",
@@ -415,7 +551,13 @@ tab_dashboard, tab_network, tab_scenarios, tab_monte_carlo, tab_scorecard, tab_d
     "🎯 Decision Intelligence",
     "📁 Data Upload",
     "📡 Sentinel Agent",
-])
+]
+if is_admin(current_user()):
+    tab_labels.append("🛡️ Admin & Audit")
+
+tabs = st.tabs(tab_labels)
+tab_dashboard, tab_network, tab_scenarios, tab_monte_carlo, tab_scorecard, tab_decision, tab_upload, tab_sentinel = tabs[:8]
+tab_admin = tabs[8] if len(tabs) > 8 else None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -423,6 +565,9 @@ tab_dashboard, tab_network, tab_scenarios, tab_monte_carlo, tab_scorecard, tab_d
 # ═══════════════════════════════════════════════════════════════════
 
 with tab_dashboard:
+    if active_network_source == "uploaded":
+        st.caption("Live uploaded supplier network is active across all analytics tabs.")
+
     # Top metrics row
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -568,9 +713,15 @@ with tab_network:
     st.markdown("#### Supply Network Topology & Centrality Analysis")
     st.caption("Node size = criticality score · Color = risk level · Edge thickness = dependency weight")
 
+    if active_network_source == "uploaded":
+        st.info("This topology was generated from your uploaded supplier file. Upstream links are inferred from tier, category, country, and spend so the network analytics can still run end to end.")
+
     # Build network visualization
     pos = {}
-    tier_x = {-2: 5, -1: 4, 0: 3, 1: 2, 2: 1, 3: 0}
+    positive_tiers = sorted({node.get("tier", 0) for node in data["nodes"] if node.get("tier", 0) > 0})
+    tier_x = {-2: 5, -1: 4, 0: 3}
+    for offset, tier in enumerate(positive_tiers, start=1):
+        tier_x[tier] = 3 - offset
     tier_counts = {}
 
     for node in data["nodes"]:
@@ -643,7 +794,7 @@ with tab_network:
 
     # Tier labels
     for tier, x in tier_x.items():
-        label = {-2: "Customers", -1: "Distribution", 0: "OEM", 1: "Tier 1", 2: "Tier 2", 3: "Tier 3"}
+        label = {-2: "Customers", -1: "Distribution", 0: "OEM"}
         fig.add_annotation(
             x=x, y=-3.5, text=label.get(tier, f"Tier {tier}"),
             showarrow=False, font=dict(size=11, color="#6366f1", family="JetBrains Mono"),
@@ -710,6 +861,8 @@ with tab_scenarios:
 
     with col_config:
         scenarios = data.get("scenarios", [])
+        if active_network_source == "uploaded":
+            st.info("Scenarios below were generated automatically from the risk profile of your uploaded suppliers.")
         scenario_names = [s["name"] for s in scenarios]
         selected_name = st.selectbox("Select Disruption Scenario", scenario_names)
         scenario = next(s for s in scenarios if s["name"] == selected_name)
@@ -726,10 +879,21 @@ with tab_scenarios:
                            help="Rate at which disrupted suppliers recover")
         n_runs = st.slider("Simulation runs", 20, 200, 50, 10)
 
-        run_sim = st.button("🚀 Run Cascade Simulation", type="primary", use_container_width=True)
+        run_sim = st.button(
+            "🚀 Run Cascade Simulation",
+            type="primary",
+            use_container_width=True,
+            disabled=not can_mutate(),
+        )
+        if not can_mutate():
+            st.caption("Viewer role can inspect results but cannot run new simulations.")
 
     with col_results:
         if run_sim:
+            audit(
+                "simulation.run_cascade",
+                {"scenario": selected_name, "beta": beta, "gamma": gamma, "runs": n_runs},
+            )
             with st.spinner(f"Running {n_runs} SIR simulations..."):
                 params = PropagationParams(beta=beta, gamma=gamma, time_steps=30)
                 mc_sir = run_monte_carlo_sir(G, scenario["affected_nodes"], params, n_runs=n_runs)
@@ -811,6 +975,8 @@ with tab_monte_carlo:
 
     with col_params:
         suppliers_with_spend = risk_df[risk_df["spend"] > 0]
+        if suppliers_with_spend.empty:
+            suppliers_with_spend = risk_df.copy()
         selected_supplier = st.selectbox(
             "Select Supplier",
             suppliers_with_spend["name"].tolist(),
@@ -823,9 +989,17 @@ with tab_monte_carlo:
         st.markdown("---")
         st.markdown("**Cost Parameters**")
 
-        annual_spend = st.number_input("Annual Spend ($)", value=int(sup_row["spend"]), step=100000)
+        annual_spend_default = int(sup_row["spend"]) if sup_row["spend"] > 0 else 250000
+        annual_spend = st.number_input("Annual Spend ($)", value=annual_spend_default, step=100000)
         daily_demand = st.number_input("Daily Demand (units)", value=200, step=50)
-        unit_cost = st.number_input("Unit Cost ($)", value=55.0, step=5.0)
+        unit_cost_default = 55.0
+        if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
+            uploaded_match = st.session_state.uploaded_supplier_df[
+                st.session_state.uploaded_supplier_df["supplier_name"] == selected_supplier
+            ]
+            if not uploaded_match.empty and uploaded_match.iloc[0].get("unit_cost", 0) > 0:
+                unit_cost_default = float(uploaded_match.iloc[0]["unit_cost"])
+        unit_cost = st.number_input("Unit Cost ($)", value=unit_cost_default, step=5.0)
         profit_margin = st.number_input("Profit Margin/Unit ($)", value=22.0, step=2.0)
         holding_rate = st.slider("Holding Cost Rate (%)", 15, 40, 25) / 100
 
@@ -836,10 +1010,21 @@ with tab_monte_carlo:
         max_delay = st.number_input("Max Delay (days)", value=90, step=5)
         mc_iters = st.slider("MC Iterations", 1000, 10000, 5000, 500)
 
-        run_mc = st.button("💰 Run Financial Simulation", type="primary", use_container_width=True)
+        run_mc = st.button(
+            "💰 Run Financial Simulation",
+            type="primary",
+            use_container_width=True,
+            disabled=not can_mutate(),
+        )
+        if not can_mutate():
+            st.caption("Viewer role can inspect results but cannot run new financial simulations.")
 
     with col_output:
         if run_mc:
+            audit(
+                "simulation.run_financial",
+                {"supplier": selected_supplier, "iterations": mc_iters, "annual_spend": annual_spend},
+            )
             supplier_profile = SupplierCostProfile(
                 annual_spend=annual_spend,
                 daily_demand_units=daily_demand,
@@ -1066,7 +1251,7 @@ with tab_decision:
             "Switching Cost": switching_cost,
             "Total TCO": total_tco,
             "Unit Cost": row["Unit_Cost"],
-            "Hidden Cost %": ((copq + delivery_cost) / direct_cost * 100),
+            "Hidden Cost %": ((copq + delivery_cost) / direct_cost * 100) if direct_cost > 0 else 0,
         })
 
     tco_df = pd.DataFrame(tco_rows).sort_values("Total TCO")
@@ -1209,10 +1394,13 @@ with tab_upload:
     st.markdown("---")
     col_upload, col_info = st.columns([1.2, 1])
     with col_upload:
+        if not can_mutate():
+            st.info("Viewer role is read-only. Ask an admin or analyst to upload/activate supplier data.")
         uploaded_file = st.file_uploader(
             "Upload Supplier Data",
             type=["xlsx", "xls", "csv"],
             help="Column names are auto-detected — exact match not required.",
+            disabled=not can_mutate(),
         )
         if uploaded_file is not None:
             with st.spinner("Processing your file..."):
@@ -1251,6 +1439,19 @@ with tab_upload:
                     if st.button("🚀 Activate This Dataset", type="primary", use_container_width=True):
                         st.session_state.uploaded_supplier_df = result.df
                         st.session_state.using_uploaded_data = True
+                        upload_id = save_supplier_upload(
+                            current_user()["username"],
+                            uploaded_file.name,
+                            result.df,
+                        )
+                        audit(
+                            "data.activate_upload",
+                            {
+                                "upload_id": upload_id,
+                                "filename": uploaded_file.name,
+                                "row_count": result.row_count,
+                            },
+                        )
                         st.success("✅ Dataset activated!")
                         st.rerun()
                 with col_cancel:
@@ -1258,8 +1459,10 @@ with tab_upload:
                         if st.button("↩️ Revert to Demo Data", use_container_width=True):
                             st.session_state.using_uploaded_data = False
                             st.session_state.uploaded_supplier_df = None
+                            audit("data.reset_to_demo", {"source": "upload_tab"})
                             st.rerun()
             else:
+                audit("data.upload_failed", {"filename": uploaded_file.name, "errors": result.errors})
                 for err in result.errors:
                     st.error(f"❌ {err}")
 
@@ -1321,182 +1524,378 @@ with tab_upload:
 with tab_sentinel:
     st.markdown("#### 📡 Sentinel Agent — Supply Chain News Intelligence")
     st.markdown(
-        "Monitors global news for supply chain disruptions and maps them to your portfolio. "
-        "Powered by **NewsAPI** + optional **AI analysis** (Claude Haiku)."
+        "Monitors supply chain disruptions and maps them to your portfolio. "
+        "Use **Live News + AI** for real articles classified by OpenAI or Claude, "
+        "**NewsAPI Rules** for local rule-based matching, or **Demo** for no-key demos."
     )
+
+    with st.expander("ℹ️ How the Sentinel Agent works (read if confused)", expanded=False):
+        st.markdown("""
+        **Why these modes?**
+        
+        Streamlit Cloud's network proxy **blocks external news APIs** (NewsAPI, Reuters, BBC, etc.).
+        This is a Streamlit Cloud infrastructure restriction, not a bug in the code.
+        
+        | Mode | Requires | Works on Streamlit Cloud? | What you get |
+        |------|----------|--------------------------|-------------|
+        | Live News + AI | NewsAPI + OpenAI/Anthropic key | Depends on host egress | Real articles classified by AI; supplier matching stays local |
+        | NewsAPI Rules | NewsAPI key | Depends on host egress | Real articles with local keyword matching |
+        | AI Scenario Briefing | Anthropic API key | ✅ YES | Synthetic planning scenarios, not verified live news |
+        | 🎯 Demo | Nothing | ✅ YES | 8 realistic pre-built scenarios |
+        
+        **Recommendation:** For a company deployment, use **Live News + AI** with secrets
+        configured server-side. This gives real-time articles while keeping uploaded supplier
+        rows out of external LLM prompts.
+        """)
 
     col_cfg, col_res = st.columns([1, 1.8])
 
     with col_cfg:
-        st.markdown("**🔑 API Keys**")
-        news_api_key = st.text_input(
-            "NewsAPI Key",
-            type="password",
-            placeholder="Get free key at newsapi.org",
+        st.markdown("**Mode Selection**")
+        sentinel_mode = st.radio(
+            "Scan Mode",
+            ["Live News + AI", "NewsAPI Rules", "AI Scenario Briefing", "Demo Mode"],
+            help="Live News + AI fetches real articles, then OpenAI or Claude classifies public article text.",
         )
-        anthropic_key_sentinel = st.text_input(
-            "Anthropic Key (optional)",
-            type="password",
-            placeholder="sk-ant-... for AI-enhanced analysis",
-        )
-        st.markdown("**⚙️ Scan Settings**")
-        days_back = st.slider("Scan last N days", 1, 30, 7)
-        max_articles = st.slider("Max articles", 5, 50, 20)
-        custom_query = st.text_input("Custom query (optional)", placeholder="tariff semiconductor")
+        st.markdown("---")
+        anthropic_key_sentinel = ""
+        openai_key_sentinel = ""
+        news_api_key = ""
+        llm_provider = "anthropic"
+        llm_model = ""
+        env_news_key = get_secret_or_env("NEWSAPI_KEY")
+        env_openai_key = get_secret_or_env("OPENAI_API_KEY")
+        env_anthropic_key = get_secret_or_env("ANTHROPIC_API_KEY")
 
-        if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
-            st.success(f"✅ Matching against {len(st.session_state.uploaded_supplier_df)} real suppliers")
-        else:
-            st.info("Using demo suppliers. Upload real data for better matching.")
-
-        run_scan = st.button(
-            "📡 Run Sentinel Scan",
-            type="primary",
-            use_container_width=True,
-            disabled=(not news_api_key),
-        )
-        if not news_api_key:
-            st.caption("Enter NewsAPI key to scan")
-            with st.expander("How to get a free NewsAPI key"):
-                st.markdown("1. Go to [newsapi.org](https://newsapi.org)")
-                st.markdown("2. Click **Get API Key** (free, no credit card)")
-                st.markdown("3. Free tier: 100 requests/day")
-
-        if st.session_state.sentinel_results:
-            st.markdown("---")
-            show_severities = st.multiselect(
-                "Severity filter",
-                ["Critical", "High", "Medium", "Low"],
-                default=["Critical", "High", "Medium"],
+        if sentinel_mode == "Live News + AI":
+            st.markdown("**API Configuration**")
+            llm_provider_label = st.selectbox("LLM provider", ["OpenAI", "Anthropic"])
+            llm_provider = llm_provider_label.lower()
+            typed_news_key = st.text_input(
+                "NewsAPI key",
+                type="password",
+                placeholder="Using NEWSAPI_KEY from env/secrets" if env_news_key else "Get a key at newsapi.org",
             )
-            show_matched_only = st.checkbox("Only supplier-matched articles", False)
+            news_api_key = typed_news_key or env_news_key
+            if llm_provider == "openai":
+                typed_openai_key = st.text_input(
+                    "OpenAI API key",
+                    type="password",
+                    placeholder="Using OPENAI_API_KEY from env/secrets" if env_openai_key else "sk-...",
+                )
+                openai_key_sentinel = typed_openai_key or env_openai_key
+                llm_model = st.text_input("OpenAI model override (optional)", value=get_secret_or_env("OPENAI_MODEL"))
+            else:
+                typed_anthropic_key = st.text_input(
+                    "Anthropic API key",
+                    type="password",
+                    placeholder="Using ANTHROPIC_API_KEY from env/secrets" if env_anthropic_key else "sk-ant-...",
+                )
+                anthropic_key_sentinel = typed_anthropic_key or env_anthropic_key
+                llm_model = st.text_input("Claude model override (optional)", value=get_secret_or_env("ANTHROPIC_MODEL"))
+            if news_api_key and (openai_key_sentinel or anthropic_key_sentinel):
+                st.success("Ready for real-time NewsAPI + AI analysis")
+            else:
+                st.warning("Add NewsAPI plus one LLM key, or configure them in .env / Streamlit secrets.")
+            st.caption("Privacy-safe path: only public article text goes to the LLM; uploaded supplier rows stay local.")
+        elif sentinel_mode == "AI Scenario Briefing":
+            st.markdown("**🔑 Anthropic API Key**")
+            typed_anthropic_key = st.text_input(
+                "Anthropic API Key",
+                type="password",
+                placeholder="Using ANTHROPIC_API_KEY from env/secrets" if env_anthropic_key else "sk-ant-...",
+                help="Claude generates synthetic portfolio-specific scenarios. Use Live News + AI for real articles.",
+                label_visibility="collapsed",
+            )
+            anthropic_key_sentinel = typed_anthropic_key or env_anthropic_key
+            if not anthropic_key_sentinel:
+                st.warning("Enter an Anthropic API key or configure ANTHROPIC_API_KEY")
+            else:
+                st.success("✅ Ready to generate AI intelligence briefing")
+        elif sentinel_mode == "NewsAPI Rules":
+            st.markdown("**🔑 NewsAPI Key**")
+            typed_news_key = st.text_input(
+                "NewsAPI Key",
+                type="password",
+                placeholder="Using NEWSAPI_KEY from env/secrets" if env_news_key else "Get free key at newsapi.org",
+                label_visibility="collapsed",
+            )
+            news_api_key = typed_news_key or env_news_key
+            st.info("Fetches real articles and uses local rule-based matching. Add an LLM key and choose Live News + AI for better classification.")
+        else:
+            st.info("🎯 Demo mode: No API key needed. Shows 8 realistic supply chain scenarios tailored to your portfolio.")
+        st.markdown("---")
+        st.markdown("**🔍 Settings**")
+        n_events = st.slider("Number of intelligence events", 5, 20, 10)
+        custom_query = st.text_input(
+            "Focus area (optional)",
+            placeholder="e.g. tariffs, semiconductor, Mexico",
+        )
+        if st.session_state.get("using_uploaded_data") and st.session_state.get("uploaded_supplier_df") is not None:
+            n_sup = len(st.session_state.uploaded_supplier_df)
+            n_countries = st.session_state.uploaded_supplier_df["country"].nunique() if "country" in st.session_state.uploaded_supplier_df.columns else "?"
+            st.success(f"✅ Analyzing {n_sup} real suppliers across {n_countries} countries")
+        else:
+            st.info("📊 Using demo supplier portfolio. Upload real data for better matching.")
+        can_run = (
+            (sentinel_mode == "Live News + AI" and bool(news_api_key) and bool(openai_key_sentinel or anthropic_key_sentinel)) or
+            (sentinel_mode == "AI Scenario Briefing" and bool(anthropic_key_sentinel)) or
+            (sentinel_mode == "NewsAPI Rules" and bool(news_api_key)) or
+            (sentinel_mode == "Demo Mode")
+        )
+        can_run = can_run and can_mutate()
+        run_scan = st.button("📡 Run Sentinel Scan", type="primary", use_container_width=True, disabled=not can_run)
+        if not can_mutate():
+            st.caption("Viewer role can inspect saved intelligence but cannot run new scans.")
+        if st.session_state.get("sentinel_results"):
+            st.markdown("---")
+            st.markdown("**🔽 Filter Results**")
+            show_severities = st.multiselect("Severity levels", ["critical", "high", "medium", "low"], default=["critical", "high", "medium"])
+            show_matched_only = st.checkbox("Only supplier-matched events", False)
 
     with col_res:
-        if run_scan and news_api_key:
-            if st.session_state.using_uploaded_data and st.session_state.uploaded_supplier_df is not None:
-                scan_df = st.session_state.uploaded_supplier_df
+        if run_scan:
+            if st.session_state.get("using_uploaded_data") and st.session_state.get("uploaded_supplier_df") is not None:
+                scan_df = st.session_state.uploaded_supplier_df.copy()
             else:
-                demo = get_scorecard_data()
-                scan_df = demo.rename(columns={
-                    "Supplier":             "supplier_name",
-                    "Country":              "country",
-                    "Unit_Cost":            "unit_cost",
-                    "Annual_Volume":        "annual_volume",
-                })
+                demo_raw = get_scorecard_data()
+                scan_df = demo_raw.rename(columns={"Supplier": "supplier_name", "Country": "country", "Category": "category", "Unit_Cost": "unit_cost", "Annual_Volume": "annual_volume"})
                 scan_df["annual_spend"] = scan_df["unit_cost"] * scan_df["annual_volume"]
-
-            with st.spinner(f"Scanning {max_articles} articles..."):
-                _sentinel_results = run_sentinel_scan(
+            mode_map = {
+                "Live News + AI": "live_ai",
+                "NewsAPI Rules": "newsapi",
+                "AI Scenario Briefing": "ai",
+                "Demo Mode": "demo",
+            }
+            chosen_mode = mode_map.get(sentinel_mode, "demo")
+            with st.spinner("🔍 Running Sentinel scan..."):
+                impacts, mode_used, error_msg = run_sentinel_scan(
                     news_api_key=news_api_key,
                     supplier_df=scan_df,
-                    anthropic_api_key=anthropic_key_sentinel or None,
-                    days_back=days_back,
-                    max_articles=max_articles,
-                    custom_query=custom_query or None,
+                    anthropic_api_key=anthropic_key_sentinel,
+                    openai_api_key=openai_key_sentinel,
+                    llm_provider=llm_provider,
+                    llm_model=llm_model,
+                    max_articles=n_events,
+                    custom_query=custom_query,
+                    mode=chosen_mode,
                 )
-                st.session_state.sentinel_results = _sentinel_results
+                st.session_state.sentinel_results = impacts
+                st.session_state.sentinel_mode_used = mode_used
+                st.session_state.sentinel_error = error_msg
                 st.session_state.last_scan_time = datetime.utcnow()
-
-            if _sentinel_results:
-                st.success(f"✅ {len(_sentinel_results)} articles analyzed.")
+                scan_id = save_sentinel_scan(current_user()["username"], mode_used, impacts)
+                audit(
+                    "sentinel.run_scan",
+                    {
+                        "scan_id": scan_id,
+                        "mode": mode_used,
+                        "event_count": len(impacts),
+                        "error": error_msg,
+                    },
+                )
+            if error_msg:
+                st.warning(error_msg)
+            if impacts:
+                st.success(f"✅ {len(impacts)} intelligence events generated — **{mode_used}**")
             else:
-                st.warning("No relevant articles found. Try broadening your query or increasing days.")
+                st.error("No events returned. Check your API key or try Demo Mode.")
 
-        _results = st.session_state.sentinel_results
-        if _results:
-            if st.session_state.last_scan_time:
-                st.caption(f"Last scan: {st.session_state.last_scan_time.strftime('%Y-%m-%d %H:%M UTC')}")
+        results = st.session_state.get("sentinel_results", [])
+        mode_used_display = st.session_state.get("sentinel_mode_used", "")
 
-            n_critical  = sum(1 for r in _results if r.severity == "Critical")
-            n_high      = sum(1 for r in _results if r.severity == "High")
-            n_matched   = sum(1 for r in _results if r.affected_suppliers)
-            total_exp   = sum(r.estimated_exposure_usd for r in _results)
-
+        if results:
+            if st.session_state.get("last_scan_time"):
+                scan_time = st.session_state.last_scan_time.strftime("%Y-%m-%d %H:%M UTC")
+                st.caption(f"Last scan: {scan_time} · Mode: {mode_used_display}")
+            n_critical = sum(1 for r in results if str(r.severity).lower() == "critical")
+            n_high = sum(1 for r in results if str(r.severity).lower() == "high")
+            n_matched = sum(1 for r in results if r.affected_suppliers)
+            total_exp = sum(r.estimated_exposure_usd for r in results)
             mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.metric("Articles", len(_results))
-            mc2.metric(
-                "Critical/High", n_critical + n_high,
-                delta=f"{n_critical} critical",
-                delta_color="inverse" if n_critical > 0 else "off",
-            )
+            mc1.metric("Events Analyzed", len(results))
+            mc2.metric("Critical / High", f"{n_critical} / {n_high}", delta=f"{n_critical} critical" if n_critical else None, delta_color="inverse" if n_critical > 0 else "off")
             mc3.metric("Supplier Matches", n_matched)
-            mc4.metric("Est. Exposure", f"${total_exp:,.0f}" if total_exp > 0 else "–")
-
+            mc4.metric("Est. Total Exposure", f"${total_exp:,.0f}" if total_exp > 0 else "–")
+            if "Demo" in mode_used_display:
+                st.info("🎯 **Demo mode** — these are example events to illustrate platform capabilities, not real-time news.")
+            elif "Live News + AI" in mode_used_display:
+                st.info("**Live News + AI** — real NewsAPI articles classified by the selected LLM; supplier matching stayed local.")
+            elif "AI" in mode_used_display:
+                st.info("🤖 **AI Scenario Briefing** — Claude synthesized scenario-style intelligence for planning, not verified live news.")
             st.markdown("---")
-
-            _sev_filter   = locals().get("show_severities",  ["Critical", "High", "Medium", "Low"])
-            _match_filter = locals().get("show_matched_only", False)
-            filtered = [
-                r for r in _results
-                if r.severity in _sev_filter and (not _match_filter or r.affected_suppliers)
-            ]
-
+            sev_filter = locals().get("show_severities", ["critical", "high", "medium", "low"])
+            match_filter = locals().get("show_matched_only", False)
+            filtered = [r for r in results if str(r.severity).lower() in sev_filter and (not match_filter or r.affected_suppliers)]
             if not filtered:
-                st.info("No articles match the current filters.")
+                st.info("No events match current filters.")
             else:
+                st.markdown(f"Showing **{len(filtered)}** of {len(results)} events")
                 for i, impact in enumerate(filtered):
                     sev_icon = SEVERITY_ICONS.get(impact.severity, "⚪")
                     dis_icon = DISRUPTION_ICONS.get(impact.disruption_type, "📦")
-                    with st.expander(
-                        f"{sev_icon} {dis_icon} {impact.article.title[:85]}...",
-                        expanded=(i < 2 and impact.severity in ["Critical", "High"]),
-                    ):
+                    title_short = impact.article.title[:80] + ("..." if len(impact.article.title) > 80 else "")
+                    impact_severity = str(impact.severity).lower()
+                    with st.expander(f"{sev_icon} {dis_icon} {title_short}", expanded=(i < 2 and impact_severity in ["critical", "high"])):
                         m1, m2, m3, m4 = st.columns(4)
-                        m1.markdown(f"**Severity**  \n{sev_icon} {impact.severity}")
+                        m1.markdown(f"**Severity**  \n{sev_icon} {impact_severity}")
                         m2.markdown(f"**Type**  \n{dis_icon} {impact.disruption_type}")
-                        m3.markdown(f"**Source**  \n{impact.article.source}")
+                        src_clean = impact.article.source.replace('DEMO — ', '').replace('AI Intelligence Briefing (', '').rstrip(')')
+                        m3.markdown(f"**Source**  \n{src_clean}")
                         m4.markdown(f"**Date**  \n{impact.article.published_at.strftime('%b %d, %Y')}")
                         st.markdown("---")
                         if impact.affected_suppliers:
-                            st.markdown(f"**🏭 Suppliers at risk:** {', '.join(impact.affected_suppliers[:5])}")
+                            names = ", ".join(impact.affected_suppliers[:5])
+                            extra = f" +{len(impact.affected_suppliers)-5} more" if len(impact.affected_suppliers) > 5 else ""
+                            st.markdown(f"**🏭 Affected Suppliers:** {names}{extra}")
+                        else:
+                            st.markdown("**🏭 Affected Suppliers:** None directly matched in portfolio")
                         if impact.affected_countries:
-                            st.markdown(f"**🌍 Countries:** {', '.join(impact.affected_countries[:5])}")
+                            st.markdown(f"**🌍 Countries:** {', '.join(impact.affected_countries[:6])}")
+                        if impact.affected_categories:
+                            st.markdown(f"**📦 Categories:** {', '.join(impact.affected_categories[:4])}")
                         if impact.estimated_exposure_usd > 0:
                             st.markdown(f"**💰 Estimated Exposure:** ${impact.estimated_exposure_usd:,.0f}")
-                        st.markdown(f"**Analysis:** {impact.summary}")
+                        st.markdown(f"**📝 Analysis:** {impact.summary}")
                         if impact.recommended_actions:
-                            st.markdown("**✅ Actions:**")
-                            for j, action in enumerate(impact.recommended_actions[:4], 1):
+                            st.markdown("**✅ Recommended Actions:**")
+                            for j, action in enumerate(impact.recommended_actions[:5], 1):
                                 st.markdown(f"{j}. {action}")
-                        st.markdown(
-                            f"[🔗 Read Article]({impact.article.url})  ·  "
-                            f"Confidence: {impact.confidence}  ·  {impact.analysis_method}"
-                        )
-
+                        col_link, col_conf = st.columns([2, 1])
+                        with col_link:
+                            if impact.article.url and impact.article.url != "#":
+                                st.markdown(f"[🔗 Read Full Article]({impact.article.url})")
+                        with col_conf:
+                            st.caption(f"Confidence: {impact.confidence} · {impact.analysis_method}")
             st.markdown("---")
             export_rows = [{
-                "Title":                  r.article.title,
-                "Source":                 r.article.source,
-                "Published":              r.article.published_at.strftime("%Y-%m-%d"),
-                "URL":                    r.article.url,
-                "Disruption Type":        r.disruption_type,
-                "Severity":               r.severity,
-                "Severity Score":         r.severity_score,
-                "Affected Suppliers":     "; ".join(r.affected_suppliers),
-                "Affected Countries":     "; ".join(r.affected_countries),
-                "Estimated Exposure ($)": r.estimated_exposure_usd,
-                "Summary":                r.summary,
-                "Top Action":             r.recommended_actions[0] if r.recommended_actions else "",
-                "Method":                 r.analysis_method,
-            } for r in _results]
+                "Title": r.article.title, "Source": r.article.source,
+                "Date": r.article.published_at.strftime("%Y-%m-%d"),
+                "Type": r.disruption_type, "Severity": r.severity, "Score": r.severity_score,
+                "Affected Suppliers": "; ".join(r.affected_suppliers),
+                "Countries": "; ".join(r.affected_countries),
+                "Est. Exposure ($)": r.estimated_exposure_usd,
+                "Summary": r.summary,
+                "Top Action": r.recommended_actions[0] if r.recommended_actions else "",
+                "Mode": r.analysis_method,
+            } for r in results]
             st.download_button(
                 "⬇️ Export Sentinel Report (CSV)",
                 data=pd.DataFrame(export_rows).to_csv(index=False).encode(),
-                file_name=f"sentinel_{datetime.utcnow().strftime('%Y%m%d')}.csv",
+                file_name=f"sentinel_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
+                disabled=not can_mutate(),
+                on_click=audit,
+                args=("report.export_sentinel_csv", {"row_count": len(export_rows), "mode": mode_used_display}),
             )
-
+            if not can_mutate():
+                st.caption("Viewer role cannot export reports.")
         elif not run_scan:
             st.markdown(
                 "<div style='text-align:center;padding:60px 20px;color:#475569;'>"
                 "<div style='font-size:3rem;'>📡</div>"
-                "<div style='margin-top:8px;'>Enter your NewsAPI key and click Run Sentinel Scan</div>"
-                "</div>",
+                "<div style='font-size:1.1rem;font-weight:500;margin-top:12px;'>Sentinel Agent Ready</div>"
+                "<div style='font-size:0.85rem;margin-top:10px;line-height:1.6;'>"
+                "Select a mode on the left and click <b>Run Sentinel Scan</b>.<br><br>"
+                "No API key? Choose <b>Demo Mode</b> to see example intelligence events."
+                "</div></div>",
                 unsafe_allow_html=True,
             )
 
 
 # ═══════════════════════════════════════════════════════════════════
+# ADMIN & AUDIT
+# ═══════════════════════════════════════════════════════════════════
+
+if tab_admin is not None:
+    with tab_admin:
+        st.markdown("#### 🛡️ Admin & Audit")
+        st.caption("Pilot controls for users, roles, persistence, and auditability.")
+
+        admin_user = current_user()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Database", Path(pilot_db_info["db_path"]).name)
+        c2.metric("Users", len(list_users()))
+        c3.metric("Saved Sentinel Scans", len(list_sentinel_scans(limit=500)))
+
+        if pilot_db_info["default_password_in_use"]:
+            st.warning(
+                "Default admin password is still possible unless changed. "
+                "Set `SUPPLIER_APP_ADMIN_PASSWORD` before first deployment and rotate this admin password now."
+            )
+
+        tab_users, tab_audit, tab_history = st.tabs(["Users", "Audit Log", "Saved Scans"])
+
+        with tab_users:
+            st.markdown("##### Create User")
+            with st.form("create_user_form"):
+                new_username = st.text_input("Username")
+                new_password = st.text_input("Temporary password", type="password")
+                new_role = st.selectbox("Role", ["analyst", "viewer", "admin"])
+                create_submitted = st.form_submit_button("Create user", type="primary")
+            if create_submitted:
+                try:
+                    create_user(new_username, new_password, new_role, admin_user)
+                    st.success(f"Created user `{new_username}`.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
+            st.markdown("##### Existing Users")
+            users_df = pd.DataFrame(list_users())
+            if not users_df.empty:
+                users_df["is_active"] = users_df["is_active"].astype(bool)
+                st.dataframe(users_df, use_container_width=True, hide_index=True)
+
+            with st.expander("Manage Existing User"):
+                usernames = [u["username"] for u in list_users()]
+                if usernames:
+                    target_user = st.selectbox("User", usernames)
+                    active = st.checkbox("Active", value=next(u["is_active"] for u in list_users() if u["username"] == target_user) == 1)
+                    if st.button("Update active status"):
+                        if target_user == admin_user["username"] and not active:
+                            st.error("You cannot deactivate your own active admin session.")
+                        else:
+                            set_user_active(target_user, active, admin_user)
+                            st.success("Updated user status.")
+                            st.rerun()
+                    new_pw = st.text_input("New password", type="password")
+                    if st.button("Reset password"):
+                        try:
+                            change_user_password(target_user, new_pw, admin_user)
+                            st.success("Password updated.")
+                        except Exception as exc:
+                            st.error(str(exc))
+
+        with tab_audit:
+            audit_rows = list_audit_logs(limit=300)
+            if audit_rows:
+                audit_df = pd.DataFrame(audit_rows)
+                audit_df["details"] = audit_df["details_json"].apply(lambda x: json.dumps(json.loads(x), indent=0))
+                st.dataframe(
+                    audit_df[["timestamp", "username", "role", "action", "details"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.download_button(
+                    "Export Audit Log (CSV)",
+                    data=audit_df.to_csv(index=False).encode(),
+                    file_name=f"audit_log_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv",
+                    on_click=audit,
+                    args=("admin.export_audit_log", {"row_count": len(audit_rows)}),
+                )
+            else:
+                st.info("No audit events yet.")
+
+        with tab_history:
+            scans = list_sentinel_scans(limit=100)
+            if scans:
+                scans_df = pd.DataFrame(scans)
+                st.dataframe(scans_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No saved Sentinel scans yet.")
+
 # FOOTER
 # ═══════════════════════════════════════════════════════════════════
 

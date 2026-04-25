@@ -72,14 +72,14 @@ All data in this system falls into one of four categories:
 │  │ • Bayesian    │  │  to LLM API  │  │  data stays      │  │
 │  │ • Monte Carlo │  │       │      │  │  here             │  │
 │  │ • Graph       │  │       ▼      │  │                  │  │
-│  └──────────────┘  │  Claude API   │  │  • Supplier DB   │  │
+│  └──────────────┘  │ OpenAI/Claude │  │  • Supplier DB   │  │
 │                    │  (news only)  │  │  • Risk scores   │  │
 │                    └──────────────┘  │  • Network graph  │  │
 │                                      └──────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 
 KEY PRINCIPLE: Confidential supplier data NEVER leaves the
-application server. Only public news text is sent to Claude API
+application server. In production Sentinel mode, only public news text is sent to OpenAI/Claude
 for event classification.
 ```
 
@@ -87,12 +87,13 @@ for event classification.
 
 ## 3. What Goes to External APIs (and What Doesn't)
 
-### Sentinel Agent → Claude API
+### Sentinel Agent → OpenAI/Claude API
 **SENT:**
 - News article title (public)
 - News article summary text (public)
 - Source name (public)
 - Publication date (public)
+- Public article URL/content snippet from NewsAPI
 
 **NEVER SENT:**
 - Supplier names
@@ -101,6 +102,9 @@ for event classification.
 - Network topology
 - Client company name
 - Any data from the CONFIDENTIAL category
+
+The optional AI Scenario Briefing mode sends only aggregate portfolio context
+(country/category/tier counts), not supplier names, spend, pricing, or topology.
 
 ### Mathematical Models (SIR, Bayesian, Monte Carlo, Graph)
 **All computation happens locally.** Zero external API calls.
@@ -111,8 +115,11 @@ Client data stays on the application server at all times.
 ## 4. Authentication & Access Control
 
 ### Current (Research Prototype)
-- Single-user, local deployment
-- No authentication required (localhost only)
+- Pilot authentication with PBKDF2 password hashes
+- Role-based access: admin, analyst, viewer
+- Session timeout configurable by `SUPPLIER_APP_SESSION_TIMEOUT_MINUTES`
+- Admin user management available in the Admin & Audit tab
+- Local SQLite audit trail for login, uploads, simulations, scans, exports, and admin actions
 
 ### Phase 2 (Consulting/Multi-user)
 - Token-based API authentication
@@ -199,7 +206,8 @@ Report vulnerabilities to: security@[yourdomain].com
 
 | Dependency | Purpose | Data Access |
 |-----------|---------|-------------|
-| Anthropic Claude API | News classification only | Public text only |
+| Anthropic Claude API | News classification / scenario synthesis | Public text or aggregate-only context |
+| OpenAI API | News classification only | Public text only |
 | Streamlit | Web interface | Renders UI, no data storage |
 | NetworkX | Graph computation | Local only |
 | NumPy/SciPy | Mathematical models | Local only |
