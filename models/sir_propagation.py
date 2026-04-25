@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from enum import Enum
 
-from models.nasa_upgrades import (
+from .nasa_upgrades import (
     SUPPLIER_WEIBULL_PROFILES,
     compute_time_dependent_sir_beta,
 )
