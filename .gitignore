@@ -7,3 +7,5 @@ data/*.db
 data/*.db-journal
 streamlit.*.log
 tests/.tmp_*
+test.txt
+Supplier Intelligence Platform*.pdf
