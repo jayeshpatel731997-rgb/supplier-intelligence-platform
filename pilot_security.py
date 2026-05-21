@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 from contextlib import contextmanager
@@ -25,6 +26,12 @@ import pandas as pd
 DB_PATH = Path(os.getenv("SUPPLIER_APP_DB_PATH", "data/pilot_app.db"))
 VALID_ROLES = {"admin", "analyst", "viewer"}
 MUTATING_ROLES = {"admin", "analyst"}
+MAX_FAILED_ATTEMPTS = int(os.getenv("SUPPLIER_APP_MAX_FAILED_ATTEMPTS", "5"))
+LOCKOUT_MINUTES = int(os.getenv("SUPPLIER_APP_LOCKOUT_MINUTES", "15"))
+
+
+def security_mode() -> str:
+    return os.getenv("SUPPLIER_SECURITY_MODE", os.getenv("SECURITY_MODE", "local")).strip().lower()
 
 
 def utc_now_iso() -> str:
@@ -68,6 +75,22 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 
+def validate_password_strength(password: str) -> None:
+    value = password or ""
+    if len(value) < 10:
+        raise ValueError("Password must be at least 10 characters.")
+    if not re.search(r"[A-Z]", value) or not re.search(r"[a-z]", value) or not re.search(r"\d", value):
+        raise ValueError("Password must include uppercase, lowercase, and numeric characters.")
+
+
+def _ensure_user_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "failed_login_count" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN failed_login_count INTEGER NOT NULL DEFAULT 0")
+    if "locked_until" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
+
+
 def init_pilot_database() -> dict[str, Any]:
     """Create tables and seed a first admin if the DB is empty."""
     with _connect() as conn:
@@ -79,6 +102,8 @@ def init_pilot_database() -> dict[str, Any]:
                 role TEXT NOT NULL CHECK(role IN ('admin', 'analyst', 'viewer')),
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
+                failed_login_count INTEGER NOT NULL DEFAULT 0,
+                locked_until TEXT,
                 last_login_at TEXT
             );
 
@@ -111,10 +136,22 @@ def init_pilot_database() -> dict[str, Any]:
             );
             """
         )
+        _ensure_user_columns(conn)
         count = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
         if count == 0:
+            mode = security_mode()
             username = os.getenv("SUPPLIER_APP_ADMIN_USER", "admin")
+            password_set = "SUPPLIER_APP_ADMIN_PASSWORD" in os.environ
             password = os.getenv("SUPPLIER_APP_ADMIN_PASSWORD", "ChangeMe123!")
+            if mode == "production" and not password_set:
+                return {
+                    "db_path": str(DB_PATH),
+                    "default_admin_user": username,
+                    "default_password_in_use": False,
+                    "requires_first_admin_setup": True,
+                    "security_mode": mode,
+                }
+            validate_password_strength(password)
             conn.execute(
                 """
                 INSERT INTO users (username, password_hash, role, is_active, created_at)
@@ -137,20 +174,68 @@ def init_pilot_database() -> dict[str, Any]:
     return {
         "db_path": str(DB_PATH),
         "default_admin_user": os.getenv("SUPPLIER_APP_ADMIN_USER", "admin"),
-        "default_password_in_use": "SUPPLIER_APP_ADMIN_PASSWORD" not in os.environ,
+        "default_password_in_use": security_mode() != "production" and "SUPPLIER_APP_ADMIN_PASSWORD" not in os.environ,
+        "requires_first_admin_setup": False,
+        "security_mode": security_mode(),
     }
+
+
+def create_initial_admin(username: str, password: str) -> None:
+    validate_password_strength(password)
+    username = (username or "").strip()
+    if not username:
+        raise ValueError("Username is required.")
+    with _connect() as conn:
+        count = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+        if count:
+            raise ValueError("Initial admin can only be created before any users exist.")
+        conn.execute(
+            """
+            INSERT INTO users (username, password_hash, role, is_active, created_at)
+            VALUES (?, ?, 'admin', 1, ?)
+            """,
+            (username, hash_password(password), utc_now_iso()),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_logs (timestamp, username, role, action, details_json)
+            VALUES (?, ?, 'admin', 'system.create_initial_admin', '{}')
+            """,
+            (utc_now_iso(), username),
+        )
 
 
 def authenticate_user(username: str, password: str) -> dict[str, Any] | None:
     username = (username or "").strip()
     with _connect() as conn:
         row = conn.execute(
-            "SELECT username, password_hash, role, is_active FROM users WHERE username = ?",
+            """
+            SELECT username, password_hash, role, is_active, failed_login_count, locked_until
+            FROM users WHERE username = ?
+            """,
             (username,),
         ).fetchone()
-        if not row or not row["is_active"] or not verify_password(password, row["password_hash"]):
+        if not row or not row["is_active"]:
             return None
-        conn.execute("UPDATE users SET last_login_at = ? WHERE username = ?", (utc_now_iso(), username))
+        now = utc_now_iso()
+        if row["locked_until"] and row["locked_until"] > now:
+            return None
+        if not verify_password(password, row["password_hash"]):
+            failed = int(row["failed_login_count"] or 0) + 1
+            locked_until = None
+            if failed >= MAX_FAILED_ATTEMPTS:
+                from datetime import timedelta
+
+                locked_until = (datetime.now(UTC) + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(timespec="seconds")
+            conn.execute(
+                "UPDATE users SET failed_login_count = ?, locked_until = ? WHERE username = ?",
+                (failed, locked_until, username),
+            )
+            return None
+        conn.execute(
+            "UPDATE users SET last_login_at = ?, failed_login_count = 0, locked_until = NULL WHERE username = ?",
+            (utc_now_iso(), username),
+        )
         return {"username": row["username"], "role": row["role"]}
 
 
@@ -199,8 +284,7 @@ def create_user(username: str, password: str, role: str, actor: dict[str, str]) 
         raise ValueError("Username is required.")
     if role not in VALID_ROLES:
         raise ValueError("Role must be admin, analyst, or viewer.")
-    if len(password or "") < 10:
-        raise ValueError("Password must be at least 10 characters.")
+    validate_password_strength(password)
 
     with _connect() as conn:
         conn.execute(
@@ -220,8 +304,7 @@ def set_user_active(username: str, is_active: bool, actor: dict[str, str]) -> No
 
 
 def change_user_password(username: str, new_password: str, actor: dict[str, str]) -> None:
-    if len(new_password or "") < 10:
-        raise ValueError("Password must be at least 10 characters.")
+    validate_password_strength(new_password)
     with _connect() as conn:
         conn.execute("UPDATE users SET password_hash = ? WHERE username = ?", (hash_password(new_password), username))
     log_audit(actor["username"], actor["role"], "admin.change_password", {"target": username})

@@ -8,10 +8,12 @@ import pilot_security
 from pilot_security import (
     authenticate_user,
     create_user,
+    create_initial_admin,
     hash_password,
     init_pilot_database,
     list_audit_logs,
     save_supplier_upload,
+    validate_password_strength,
     verify_password,
 )
 
@@ -51,6 +53,52 @@ class PilotSecurityTests(unittest.TestCase):
                 actions = {row["action"] for row in list_audit_logs()}
                 self.assertIn("system.seed_admin", actions)
                 self.assertIn("admin.create_user", actions)
+        finally:
+            for suffix in ["", "-wal", "-shm"]:
+                path = Path(f"{test_db}{suffix}")
+                if path.exists():
+                    path.unlink()
+
+    def test_production_mode_requires_first_admin_setup(self):
+        test_db = Path("tests/.tmp_pilot_security_prod.db")
+        for suffix in ["", "-wal", "-shm"]:
+            path = Path(f"{test_db}{suffix}")
+            if path.exists():
+                path.unlink()
+        try:
+            with (
+                patch.object(pilot_security, "DB_PATH", test_db),
+                patch.dict("os.environ", {"SUPPLIER_SECURITY_MODE": "production"}, clear=True),
+            ):
+                info = init_pilot_database()
+                self.assertTrue(info["requires_first_admin_setup"])
+                self.assertIsNone(authenticate_user("admin", "ChangeMe123!"))
+
+                create_initial_admin("owner", "StrongerPass123!")
+                admin = authenticate_user("owner", "StrongerPass123!")
+                self.assertIsNotNone(admin)
+                self.assertEqual(admin["role"], "admin")
+        finally:
+            for suffix in ["", "-wal", "-shm"]:
+                path = Path(f"{test_db}{suffix}")
+                if path.exists():
+                    path.unlink()
+
+    def test_password_strength_and_failed_login_lockout(self):
+        with self.assertRaises(ValueError):
+            validate_password_strength("password")
+
+        test_db = Path("tests/.tmp_pilot_security_lockout.db")
+        for suffix in ["", "-wal", "-shm"]:
+            path = Path(f"{test_db}{suffix}")
+            if path.exists():
+                path.unlink()
+        try:
+            with patch.object(pilot_security, "DB_PATH", test_db):
+                init_pilot_database()
+                for _ in range(pilot_security.MAX_FAILED_ATTEMPTS):
+                    self.assertIsNone(authenticate_user("admin", "bad-password"))
+                self.assertIsNone(authenticate_user("admin", "ChangeMe123!"))
         finally:
             for suffix in ["", "-wal", "-shm"]:
                 path = Path(f"{test_db}{suffix}")

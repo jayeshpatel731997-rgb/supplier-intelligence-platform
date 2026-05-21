@@ -1,0 +1,200 @@
+services:
+  - type: keyvalue
+    name: supplier-intelligence-redis
+    plan: free
+    region: oregon
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
+  - type: web
+    name: supplier-intelligence-api
+    runtime: docker
+    plan: starter
+    region: oregon
+    branch: codex/production-foundation
+    autoDeploy: true
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    dockerCommand: /bin/sh -c "python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: supplier-intelligence-staging
+      - key: SUPPLIER_DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: supplier-intelligence-redis
+          property: connectionString
+
+  - type: web
+    name: supplier-intelligence-command-center
+    runtime: docker
+    plan: starter
+    region: oregon
+    branch: codex/production-foundation
+    autoDeploy: true
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: /bin/sh -c "streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0"
+    healthCheckPath: /_stcore/health
+    envVars:
+      - fromGroup: supplier-intelligence-staging
+      - key: SUPPLIER_DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: supplier-intelligence-redis
+          property: connectionString
+
+  - type: worker
+    name: supplier-intelligence-celery-worker
+    runtime: docker
+    plan: starter
+    region: oregon
+    branch: codex/production-foundation
+    autoDeploy: true
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    dockerCommand: /bin/sh -c "python scripts/migrate.py && celery -A backend.worker.celery_app worker --loglevel=INFO"
+    envVars:
+      - fromGroup: supplier-intelligence-staging
+      - key: WORKER_MODE
+        value: celery
+      - key: SUPPLIER_SCHEDULER_ENABLED
+        value: "false"
+      - key: SUPPLIER_DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: supplier-intelligence-redis
+          property: connectionString
+
+  - type: cron
+    name: supplier-intelligence-sentinel-cron
+    runtime: docker
+    plan: starter
+    region: oregon
+    branch: codex/production-foundation
+    schedule: "0 * * * *"
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    dockerCommand: /bin/sh -c "celery -A backend.worker.celery_app call sentinel_scan_all_tenants_task"
+    envVars:
+      - fromGroup: supplier-intelligence-staging
+      - key: WORKER_MODE
+        value: celery
+      - key: SUPPLIER_DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: supplier-intelligence-redis
+          property: connectionString
+
+  - type: cron
+    name: supplier-intelligence-risk-cron
+    runtime: docker
+    plan: starter
+    region: oregon
+    branch: codex/production-foundation
+    schedule: "30 */2 * * *"
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    dockerCommand: /bin/sh -c "celery -A backend.worker.celery_app call risk_recalculation_all_tenants_task && celery -A backend.worker.celery_app call exposure_recalculation_all_tenants_task"
+    envVars:
+      - fromGroup: supplier-intelligence-staging
+      - key: WORKER_MODE
+        value: celery
+      - key: SUPPLIER_DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: supplier-intelligence-redis
+          property: connectionString
+
+databases:
+  - name: supplier-intelligence-postgres
+    databaseName: supplier_intelligence
+    user: supplier_app
+    plan: basic-256mb
+    region: oregon
+    postgresMajorVersion: "16"
+    ipAllowList: []
+
+envVarGroups:
+  - name: supplier-intelligence-staging
+    envVars:
+      - key: SUPPLIER_SECURITY_MODE
+        value: local
+      - key: SUPPLIER_DEPLOYMENT_MODE
+        value: render-staging
+      - key: SUPPLIER_DEMO_MODE
+        value: "true"
+      - key: AUTH_PROVIDER
+        value: local
+      - key: AUTH_ALLOW_LOCAL_IN_PRODUCTION
+        value: "false"
+      - key: DEFAULT_TENANT_ID
+        value: demo-tenant
+      - key: SUPPLIER_DEMO_API_KEY
+        sync: false
+      - key: SUPPLIER_APP_ADMIN_USER
+        value: staging-admin
+      - key: SUPPLIER_APP_ADMIN_PASSWORD
+        sync: false
+      - key: SUPPLIER_APP_SESSION_TIMEOUT_MINUTES
+        value: "60"
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_REQUESTS
+        value: "300"
+      - key: RATE_LIMIT_WINDOW_SECONDS
+        value: "60"
+      - key: RETENTION_ENABLED
+        value: "false"
+      - key: SECRETS_PROVIDER
+        value: env
+      - key: KMS_PROVIDER
+        value: local
+      - key: CORS_ALLOW_ORIGINS
+        value: "*"
+      - key: WORKER_MODE
+        value: local
+      - key: SUPPLIER_SCHEDULER_ENABLED
+        value: "false"
+      - key: NEWSAPI_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: WORKOS_API_KEY
+        sync: false
+      - key: WORKOS_CLIENT_ID
+        sync: false

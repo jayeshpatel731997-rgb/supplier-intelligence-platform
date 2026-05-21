@@ -1,9 +1,18 @@
 # Core
 streamlit>=1.30.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
 pandas>=2.0.0
 numpy>=1.24.0
 networkx>=3.1
 scipy>=1.11.0
+sqlalchemy>=2.0.0
+psycopg[binary]>=3.1.0
+alembic>=1.13.0
+apscheduler>=3.10.0
+celery>=5.3.0
+redis>=5.0.0
+PyJWT>=2.8.0
 
 # AI / LLM
 anthropic>=0.40.0
@@ -20,6 +29,12 @@ beautifulsoup4>=4.12.0
 # Utilities
 python-dotenv>=1.0.0
 pydantic>=2.0.0
+python-multipart>=0.0.9
 
 # Export
 openpyxl>=3.1.0
+
+# Testing / quality
+pytest>=8.0.0
+ruff>=0.5.0
+locust>=2.24.0
