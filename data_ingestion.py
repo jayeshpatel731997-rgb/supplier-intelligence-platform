@@ -409,7 +409,10 @@ def ingest_file(file_bytes: bytes, filename: str) -> IngestionResult:
             # Type coercion
             try:
                 if meta["dtype"] == "float":
-                    val = float(val) if pd.notna(val) else meta.get("default", 0.0)
+                    # Preserve raw currency/percent strings here; the numeric
+                    # cleaner below handles "$125,000", "97%", and similar
+                    # real procurement exports more accurately than float().
+                    val = val if pd.notna(val) else meta.get("default", 0.0)
                 elif meta["dtype"] == "int":
                     val = int(float(val)) if pd.notna(val) else meta.get("default", 1)
                 elif meta["dtype"] == "str":

@@ -34,6 +34,7 @@ from news_intelligence import (
 from pilot_security import (
     authenticate_user,
     change_user_password,
+    create_initial_admin,
     create_user,
     has_mutation_access,
     init_pilot_database,
@@ -46,6 +47,25 @@ from pilot_security import (
     save_supplier_upload,
     set_user_active,
 )
+
+try:
+    from src.config import get_settings as get_production_settings
+    from src.database import create_session_factory as create_production_session_factory
+    from src.database import init_database as init_production_database
+    from src.database import seed_demo_tenant as seed_production_demo_tenant
+    from src.repositories.alerts import AlertRepository as ProductionAlertRepository
+    from src.repositories.tenants import TenantRepository as ProductionTenantRepository
+    from src.services.audit_export import AuditExportService as ProductionAuditExportService
+    from src.services.compliance_evidence import EvidenceService as ProductionEvidenceService
+    from src.services.migration_service import validate_tenant_schema as validate_production_tenant_schema
+    from src.services.scheduler import LocalJobScheduler
+    from src.services.system_service import system_status as get_production_system_status
+    from src.services.worker_queue import EnterpriseTaskRunner, get_worker_mode
+    from src.tenancy import DEMO_TENANT_ID, DEMO_PLATFORM_ADMIN, TenantContext
+
+    PRODUCTION_FOUNDATION_AVAILABLE = True
+except Exception:
+    PRODUCTION_FOUNDATION_AVAILABLE = False
 
 try:
     from dotenv import load_dotenv
@@ -385,6 +405,18 @@ if "last_scan_time" not in st.session_state:
 pilot_db_info = init_pilot_database()
 SESSION_TIMEOUT_MINUTES = int(get_secret_or_env("SUPPLIER_APP_SESSION_TIMEOUT_MINUTES", "60"))
 
+production_settings = None
+production_session_factory = None
+if PRODUCTION_FOUNDATION_AVAILABLE:
+    try:
+        production_settings = get_production_settings()
+        production_session_factory = create_production_session_factory(production_settings)
+        init_production_database(production_session_factory)
+        if production_settings.demo_mode and not production_settings.is_production:
+            seed_production_demo_tenant(production_session_factory)
+    except Exception:
+        PRODUCTION_FOUNDATION_AVAILABLE = False
+
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 if "auth_last_seen" not in st.session_state:
@@ -393,6 +425,17 @@ if "auth_last_seen" not in st.session_state:
 
 def current_user() -> dict:
     return st.session_state.auth_user or {"username": "anonymous", "role": "viewer"}
+
+
+def enterprise_context() -> TenantContext:
+    user = current_user()
+    fallback_role = st.session_state.get("active_tenant_role") or ("platform_admin" if user.get("role") == "admin" else "viewer")
+    fallback_username = DEMO_PLATFORM_ADMIN if fallback_role == "platform_admin" else user.get("username", "viewer")
+    return TenantContext(
+        tenant_id=st.session_state.get("active_tenant_id", DEMO_TENANT_ID),
+        username=fallback_username,
+        role=fallback_role,
+    )
 
 
 def can_mutate() -> bool:
@@ -407,6 +450,20 @@ def audit(action: str, details: dict | None = None) -> None:
 def render_login() -> None:
     st.markdown("## Supplier Intelligence Platform")
     st.caption("Secure internal pilot login")
+    if pilot_db_info.get("requires_first_admin_setup"):
+        st.warning("Production mode is enabled and no admin user exists. Create the first admin before continuing.")
+        with st.form("first_admin_setup", clear_on_submit=False):
+            setup_username = st.text_input("Admin username")
+            setup_password = st.text_input("Admin password", type="password")
+            submitted_setup = st.form_submit_button("Create first admin", type="primary")
+        if submitted_setup:
+            try:
+                create_initial_admin(setup_username, setup_password)
+                st.success("Initial admin created. Sign in to continue.")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+        st.stop()
     if pilot_db_info["default_password_in_use"]:
         st.warning(
             "Default admin is enabled for this pilot. Login with "
@@ -458,6 +515,31 @@ with st.sidebar:
     )
     user = current_user()
     st.caption(f"Signed in as `{user['username']}` · `{user['role']}`")
+    if PRODUCTION_FOUNDATION_AVAILABLE and production_session_factory is not None:
+        try:
+            with production_session_factory() as prod_session:
+                tenant_repo = ProductionTenantRepository(prod_session)
+                tenants = tenant_repo.list_tenants()
+                tenant_options = [tenant.tenant_id for tenant in tenants] or [DEMO_TENANT_ID]
+                if st.session_state.get("active_tenant_id") not in tenant_options:
+                    st.session_state.active_tenant_id = tenant_options[0]
+                active_tenant = st.selectbox(
+                    "Active Tenant",
+                    options=tenant_options,
+                    index=tenant_options.index(st.session_state.active_tenant_id),
+                    help="Tenant context used by production API, jobs, alerts, and Enterprise Admin views.",
+                )
+                st.session_state.active_tenant_id = active_tenant
+                membership = tenant_repo.get_membership(active_tenant, user["username"])
+                if membership:
+                    st.session_state.active_tenant_role = membership.role
+                elif user.get("role") == "admin":
+                    st.session_state.active_tenant_role = "platform_admin"
+                else:
+                    st.session_state.active_tenant_role = "viewer"
+                st.caption(f"Tenant role: `{st.session_state.active_tenant_role}`")
+        except Exception as exc:
+            st.caption(f"Tenant selector unavailable: {exc}")
     if not can_mutate():
         st.info("Viewer mode: dashboards are read-only.")
     if st.button("Sign out", use_container_width=True):
@@ -552,12 +634,22 @@ tab_labels = [
     "📁 Data Upload",
     "📡 Sentinel Agent",
 ]
+tab_labels.extend(["Production Command Center", "Alerts & Health"])
+if enterprise_context().role == "platform_admin":
+    tab_labels.append("Enterprise Admin")
 if is_admin(current_user()):
     tab_labels.append("🛡️ Admin & Audit")
 
 tabs = st.tabs(tab_labels)
 tab_dashboard, tab_network, tab_scenarios, tab_monte_carlo, tab_scorecard, tab_decision, tab_upload, tab_sentinel = tabs[:8]
-tab_admin = tabs[8] if len(tabs) > 8 else None
+tab_command = tabs[8]
+tab_alerts = tabs[9]
+next_tab_index = 10
+tab_enterprise_admin = None
+if enterprise_context().role == "platform_admin":
+    tab_enterprise_admin = tabs[next_tab_index]
+    next_tab_index += 1
+tab_admin = tabs[next_tab_index] if is_admin(current_user()) and len(tabs) > next_tab_index else None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1806,6 +1898,283 @@ with tab_sentinel:
 # ═══════════════════════════════════════════════════════════════════
 # ADMIN & AUDIT
 # ═══════════════════════════════════════════════════════════════════
+
+with tab_command:
+    st.markdown("#### Production Command Center")
+    st.caption("Operational view for API, database, monitoring, security, and data freshness.")
+
+    if not PRODUCTION_FOUNDATION_AVAILABLE or production_session_factory is None or production_settings is None:
+        st.error("Production foundation modules are unavailable. Check backend dependencies and logs.")
+    else:
+        active_context = enterprise_context()
+        status = get_production_system_status(production_settings, production_session_factory, active_context.tenant_id)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Database", "Online" if status["database"]["ok"] else "Degraded", status["database"]["driver"])
+        c2.metric("API", status["api"]["status"].title())
+        c3.metric("Security Mode", status["security_mode"].title(), active_context.role)
+        c4.metric("Open Alerts", status["open_alerts"])
+
+        c5, c6, c7, c8 = st.columns(4)
+        c5.metric("Monitored Suppliers", status["monitored_suppliers"] or len(risk_df))
+        c6.metric("Demo Mode", "On" if production_settings.demo_mode else "Off")
+        c7.metric("Scheduler", "Enabled" if status["worker"]["enabled"] else "Disabled", status["worker"]["mode"])
+        c8.metric("Sentinel API", "Configured" if status["sentinel"]["configured"] else "Demo/Fallback")
+
+        c9, c10, c11, c12 = st.columns(4)
+        c9.metric("Worker Mode", status["worker_mode"]["active"].upper(), status["worker_mode"]["requested"])
+        c10.metric("Rate Limit", "On" if status["rate_limit"]["enabled"] else "Off", f"{status['rate_limit']['requests']}/window")
+        c11.metric("Secrets", status["secrets"]["provider"].upper(), status["secrets"]["kms_provider"])
+        c12.metric("Retention", "On" if status["retention"]["enabled"] else "Dry-run")
+
+        if status["production_issues"]:
+            for issue in status["production_issues"]:
+                st.warning(issue)
+
+        st.markdown("##### Monitoring Jobs")
+        col_job1, col_job2, col_job3 = st.columns(3)
+        scheduler = LocalJobScheduler(production_settings, production_session_factory)
+        if col_job1.button("Run Sentinel Scan", use_container_width=True, disabled=not can_mutate()):
+            result = scheduler.run_job_now("sentinel_scan", active_context.tenant_id)
+            st.success(f"Sentinel job {result.status}.")
+            st.rerun()
+        if col_job2.button("Recalculate Risk", use_container_width=True, disabled=not can_mutate()):
+            result = scheduler.run_job_now("risk_recalculate", active_context.tenant_id)
+            st.success(f"Risk job {result.status}.")
+            st.rerun()
+        if col_job3.button("Recalculate Exposure", use_container_width=True, disabled=not can_mutate()):
+            result = scheduler.run_job_now("exposure_recalculate", active_context.tenant_id)
+            st.success(f"Exposure job {result.status}.")
+            st.rerun()
+        if not can_mutate():
+            st.caption("Viewer role can inspect system status but cannot run jobs.")
+
+        st.markdown("##### Production Queue Tasks")
+        tq1, tq2, tq3 = st.columns(3)
+        task_runner = EnterpriseTaskRunner(production_settings, production_session_factory)
+        if tq1.button("Run Retention Dry Run", use_container_width=True, disabled=not can_mutate()):
+            result = task_runner.run_task("retention_cleanup_task", active_context.tenant_id)
+            st.success(f"Retention task {result.status}.")
+            st.rerun()
+        if tq2.button("Run Audit Export Task", use_container_width=True, disabled=not can_mutate()):
+            result = task_runner.run_task("audit_export_task", active_context.tenant_id)
+            st.success(f"Audit export task {result.status}.")
+            st.rerun()
+        if tq3.button("Record Backup Metadata", use_container_width=True, disabled=not can_mutate()):
+            result = task_runner.run_task("backup_metadata_task", active_context.tenant_id)
+            st.success(f"Backup metadata task {result.status}.")
+            st.rerun()
+
+        st.markdown("##### Data Source Status")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"source": "Supplier database", "status": "online" if status["database"]["ok"] else "degraded"},
+                    {"source": "FastAPI backend", "status": status["api"]["status"]},
+                    {"source": "Sentinel NewsAPI", "status": "configured" if production_settings.newsapi_key else "missing key"},
+                    {
+                        "source": "LLM classifier",
+                        "status": "configured" if (production_settings.openai_api_key or production_settings.anthropic_api_key) else "rule/demo fallback",
+                    },
+                    {"source": "Streamlit command center", "status": "online"},
+                    {"source": "Redis / Celery", "status": "configured" if status["worker_mode"]["available"] else "local fallback"},
+                    {"source": "SIEM export", "status": "configured" if status["siem"]["configured"] else "not configured"},
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.caption(f"Last successful Sentinel scan: {status['worker'].get('last_successful_sentinel_scan') or 'not yet run'}")
+        if status["last_failed_job"]:
+            st.error(f"Last failed job: {status['last_failed_job']['job_name']} - {status['last_failed_job']['error']}")
+
+
+with tab_alerts:
+    st.markdown("#### Alerts & System Health")
+    st.caption("Supplier risk, Sentinel, ingestion, API, and background job alerts.")
+    if not PRODUCTION_FOUNDATION_AVAILABLE or production_session_factory is None:
+        st.info("Production alert repository is unavailable.")
+    else:
+        with production_session_factory() as prod_session:
+            active_context = enterprise_context()
+            repo = ProductionAlertRepository(prod_session, active_context.tenant_id)
+            alerts = repo.list(limit=300)
+            open_alerts = [alert for alert in alerts if alert.status == "open"]
+
+            a1, a2, a3 = st.columns(3)
+            a1.metric("Open Alerts", len(open_alerts))
+            a2.metric("High/Critical", sum(1 for alert in open_alerts if alert.severity in {"high", "critical"}))
+            a3.metric("Total Exposure", f"${sum(alert.exposure or 0 for alert in open_alerts):,.0f}")
+
+            if alerts:
+                alert_df = pd.DataFrame([ProductionAlertRepository.to_dict(alert) for alert in alerts])
+                st.dataframe(alert_df, use_container_width=True, hide_index=True)
+                if can_mutate():
+                    open_ids = [alert.id for alert in open_alerts]
+                    if open_ids:
+                        selected_alert = st.selectbox("Acknowledge alert", open_ids)
+                        if st.button("Acknowledge Selected Alert", type="primary"):
+                            repo.acknowledge(int(selected_alert), actor=current_user()["username"])
+                            prod_session.commit()
+                            audit("alerts.acknowledge", {"alert_id": int(selected_alert)})
+                            st.rerun()
+            else:
+                st.info("No production alerts have been created yet.")
+
+
+if tab_enterprise_admin is not None:
+    with tab_enterprise_admin:
+        st.markdown("#### Enterprise Admin")
+        st.caption("Shared-SaaS tenant administration, access review, API keys, and SOC 2 readiness controls.")
+        if not PRODUCTION_FOUNDATION_AVAILABLE or production_session_factory is None or production_settings is None:
+            st.error("Enterprise admin is unavailable because production foundation modules did not load.")
+        else:
+            active_context = enterprise_context()
+            with production_session_factory() as prod_session:
+                tenant_repo = ProductionTenantRepository(prod_session)
+                tenants = tenant_repo.list_tenants()
+                current_tenant = tenant_repo.get_tenant(active_context.tenant_id)
+
+                e1, e2, e3, e4 = st.columns(4)
+                e1.metric("Active Tenant", active_context.tenant_id)
+                e2.metric("Tenant Role", active_context.role)
+                e3.metric("Auth Provider", get_secret_or_env("AUTH_PROVIDER", "local").upper())
+                e4.metric("Tenants", len(tenants))
+
+                if current_tenant:
+                    st.markdown("##### Tenant")
+                    st.json(ProductionTenantRepository.tenant_to_dict(current_tenant))
+
+                admin_tabs = st.tabs(
+                    [
+                        "Memberships",
+                        "API Keys",
+                        "Access Reviews",
+                        "Backup & Retention",
+                        "Security Status",
+                        "Audit Export",
+                        "Compliance",
+                    ]
+                )
+
+                with admin_tabs[0]:
+                    st.markdown("##### Tenant Memberships")
+                    memberships = tenant_repo.list_memberships(active_context.tenant_id)
+                    st.dataframe(
+                        pd.DataFrame([ProductionTenantRepository.membership_to_dict(row) for row in memberships]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    with st.form("enterprise_invite_user"):
+                        invite_username = st.text_input("User email / username")
+                        invite_role = st.selectbox(
+                            "Tenant role",
+                            ["viewer", "auditor", "analyst", "risk_manager", "org_admin", "platform_admin"],
+                        )
+                        invite_submitted = st.form_submit_button("Invite / assign role")
+                    if invite_submitted:
+                        tenant_repo.create_membership(active_context.tenant_id, invite_username, invite_role)
+                        prod_session.commit()
+                        audit("enterprise.membership_upsert", {"tenant_id": active_context.tenant_id, "username": invite_username, "role": invite_role})
+                        st.success("Membership updated.")
+                        st.rerun()
+
+                with admin_tabs[1]:
+                    st.markdown("##### Tenant API Keys")
+                    st.caption("For security, raw API keys are shown only once after creation.")
+                    with st.form("enterprise_create_api_key"):
+                        key_username = st.text_input("API key user", value=active_context.username)
+                        key_role = st.selectbox("API key role", ["viewer", "auditor", "analyst", "risk_manager", "org_admin"])
+                        key_label = st.text_input("Label", value="Streamlit-created key")
+                        key_submitted = st.form_submit_button("Create API key")
+                    if key_submitted:
+                        raw_key = tenant_repo.create_api_key(active_context.tenant_id, key_username, key_role, key_label)
+                        prod_session.commit()
+                        audit("enterprise.api_key_created", {"tenant_id": active_context.tenant_id, "username": key_username, "role": key_role})
+                        st.success(f"New API key: `{raw_key}`")
+
+                with admin_tabs[2]:
+                    st.markdown("##### Access Reviews")
+                    reviews = tenant_repo.list_access_reviews(active_context.tenant_id)
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {
+                                    "id": row.id,
+                                    "reviewer": row.reviewer,
+                                    "status": row.status,
+                                    "notes": row.notes,
+                                    "created_at": row.created_at,
+                                }
+                                for row in reviews
+                            ]
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    if st.button("Open access review for this tenant"):
+                        tenant_repo.create_access_review(active_context.tenant_id, active_context.username, "Quarterly access review opened from demo console.")
+                        prod_session.commit()
+                        audit("enterprise.access_review_opened", {"tenant_id": active_context.tenant_id})
+                        st.rerun()
+
+                with admin_tabs[3]:
+                    st.markdown("##### Backup, Retention, and SOC 2 Stubs")
+                    st.info(
+                        "Configured stubs document backup/restore and retention controls. "
+                        "Production should wire these to encrypted Postgres backups and tested restore drills."
+                    )
+                    if st.button("Record backup check"):
+                        tenant_repo.create_backup_run(active_context.tenant_id, status="recorded", location="manual/demo check")
+                        prod_session.commit()
+                        audit("enterprise.backup_check_recorded", {"tenant_id": active_context.tenant_id})
+                        st.rerun()
+
+                with admin_tabs[4]:
+                    st.markdown("##### Tenant Security Status")
+                    status = get_production_system_status(production_settings, production_session_factory, active_context.tenant_id)
+                    schema_status = validate_production_tenant_schema(prod_session)
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {"control": "Auth provider", "status": production_settings.auth_provider},
+                                {"control": "MFA policy", "status": "required" if production_settings.mfa_required else "not required"},
+                                {"control": "SCIM", "status": "enabled" if production_settings.scim_enabled else "placeholder/off"},
+                                {"control": "Worker mode", "status": get_worker_mode(production_settings)["active"]},
+                                {"control": "Redis", "status": "configured" if production_settings.redis_url else "not configured"},
+                                {"control": "Rate limit", "status": "enabled" if production_settings.rate_limit_enabled else "disabled"},
+                                {"control": "Secrets provider", "status": production_settings.secrets_provider},
+                                {"control": "KMS provider", "status": production_settings.kms_provider},
+                                {"control": "Migration schema", "status": "ok" if schema_status["ok"] else "needs review"},
+                                {"control": "Retention", "status": "enabled" if production_settings.retention_enabled else "dry-run/off"},
+                                {"control": "SIEM sink", "status": production_settings.siem_sink},
+                                {"control": "Open alerts", "status": status["open_alerts"]},
+                            ]
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    if schema_status["tables_missing_tenant_id"]:
+                        st.error(f"Tables missing tenant_id: {schema_status['tables_missing_tenant_id']}")
+
+                with admin_tabs[5]:
+                    st.markdown("##### Audit Export / SIEM Readiness")
+                    export_service = ProductionAuditExportService(prod_session, active_context.tenant_id)
+                    export_format = st.radio("Export format", ["jsonl", "csv"], horizontal=True)
+                    if st.button("Preview tenant audit export"):
+                        payload = export_service.export_csv(limit=200) if export_format == "csv" else export_service.export_jsonl(limit=200)
+                        st.text_area("Export payload", payload, height=240)
+                    st.caption("Production WORM export should target S3 Object Lock, Azure immutable blob, or GCP retention lock.")
+
+                with admin_tabs[6]:
+                    st.markdown("##### Compliance Evidence")
+                    evidence_service = ProductionEvidenceService(prod_session, active_context.tenant_id)
+                    if st.button("Collect access-control evidence"):
+                        st.json(evidence_service.collect_access_control_evidence())
+                    if st.button("Collect operations evidence"):
+                        st.json(evidence_service.collect_operational_evidence())
+                    st.caption("This gathers readiness evidence; it is not a claim of SOC 2 compliance.")
+
 
 if tab_admin is not None:
     with tab_admin:

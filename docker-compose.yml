@@ -1,0 +1,121 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: supplier_intelligence
+      POSTGRES_USER: supplier_app
+      POSTGRES_PASSWORD: supplier_app_change_me
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supplier_app -d supplier_intelligence"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      SUPPLIER_SECURITY_MODE: local
+      SUPPLIER_DEPLOYMENT_MODE: docker-compose
+      SUPPLIER_DEMO_MODE: "true"
+      SUPPLIER_DATABASE_URL: postgresql+psycopg://supplier_app:supplier_app_change_me@postgres:5432/supplier_intelligence
+      SUPPLIER_SCHEDULER_ENABLED: "false"
+      WORKER_MODE: local
+      REDIS_URL: redis://redis:6379/0
+      RATE_LIMIT_ENABLED: "true"
+      NEWSAPI_KEY: ${NEWSAPI_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "backend.worker"]
+    environment:
+      SUPPLIER_SECURITY_MODE: local
+      SUPPLIER_DEPLOYMENT_MODE: docker-compose
+      SUPPLIER_DEMO_MODE: "true"
+      SUPPLIER_DATABASE_URL: postgresql+psycopg://supplier_app:supplier_app_change_me@postgres:5432/supplier_intelligence
+      SUPPLIER_SCHEDULER_ENABLED: "true"
+      WORKER_MODE: local
+      REDIS_URL: redis://redis:6379/0
+      SUPPLIER_SENTINEL_INTERVAL_MINUTES: 60
+      SUPPLIER_RISK_INTERVAL_MINUTES: 120
+      NEWSAPI_KEY: ${NEWSAPI_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-worker:
+    profiles: ["celery"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["celery", "-A", "backend.worker.celery_app", "worker", "--loglevel=INFO"]
+    environment:
+      SUPPLIER_SECURITY_MODE: local
+      SUPPLIER_DEPLOYMENT_MODE: docker-compose
+      SUPPLIER_DEMO_MODE: "true"
+      SUPPLIER_DATABASE_URL: postgresql+psycopg://supplier_app:supplier_app_change_me@postgres:5432/supplier_intelligence
+      WORKER_MODE: celery
+      REDIS_URL: redis://redis:6379/0
+      NEWSAPI_KEY: ${NEWSAPI_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SUPPLIER_SECURITY_MODE: local
+      SUPPLIER_DEPLOYMENT_MODE: docker-compose
+      SUPPLIER_DEMO_MODE: "true"
+      SUPPLIER_DATABASE_URL: postgresql+psycopg://supplier_app:supplier_app_change_me@postgres:5432/supplier_intelligence
+      SUPPLIER_APP_DB_PATH: data/pilot_app.db
+      WORKER_MODE: local
+      REDIS_URL: redis://redis:6379/0
+      NEWSAPI_KEY: ${NEWSAPI_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8501:8501"
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  app_data:

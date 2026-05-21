@@ -118,8 +118,33 @@ Client data stays on the application server at all times.
 - Pilot authentication with PBKDF2 password hashes
 - Role-based access: admin, analyst, viewer
 - Session timeout configurable by `SUPPLIER_APP_SESSION_TIMEOUT_MINUTES`
+
+### Enterprise Readiness Layer
+
+- `AUTH_PROVIDER=local|oidc|saml` selects the provider scaffold.
+- `AUTH_ALLOW_LOCAL_IN_PRODUCTION=false` blocks unsafe local auth defaults in production.
+- `MFA_REQUIRED` and `SCIM_ENABLED` are policy/provisioning flags ready for provider integration.
+- `RATE_LIMIT_ENABLED=true` enables per-tenant/API-key local rate limiting.
+- `SECRETS_PROVIDER` and `KMS_PROVIDER` select local/cloud-ready abstractions.
+- Tenant-scoped audit export is ready for SIEM/WORM storage handoff.
+
+See `AUTH_INTEGRATION.md`, `SECRETS_AND_KMS.md`, and `COMPLIANCE_READINESS.md`.
 - Admin user management available in the Admin & Audit tab
 - Local SQLite audit trail for login, uploads, simulations, scans, exports, and admin actions
+- `SUPPLIER_SECURITY_MODE=production` prevents unsafe default admin seeding.
+- If production mode starts with no users, Streamlit requires first-admin setup.
+- Failed login attempts are tracked and accounts lock after repeated failures.
+- Password strength validation is enforced for user creation and password changes.
+
+### Production Foundation Added
+- FastAPI backend with operational endpoints.
+- SQLAlchemy database layer with SQLite fallback and Postgres-ready configuration.
+- Shared-schema multi-tenancy with `tenant_id` on business records.
+- Tenant API keys are hashed at rest and validated with `X-Tenant-ID` + `X-API-Key`.
+- Tenant-scoped RBAC roles: platform_admin, org_admin, risk_manager, analyst, viewer, auditor.
+- Alert, audit, ingestion, background job, and system health persistence.
+- APScheduler worker entrypoint for scheduled Sentinel/risk/exposure jobs.
+- Safe Sentinel failure handling for missing keys, API timeouts, and provider errors.
 
 ### Phase 2 (Consulting/Multi-user)
 - Token-based API authentication

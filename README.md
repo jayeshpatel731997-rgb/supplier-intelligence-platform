@@ -14,6 +14,9 @@ A unified platform that combines quantitative risk modeling with supplier perfor
 - Compare switching scenarios with payback period analysis
 - Upload real supplier data and automatically generate a runnable network model
 - Monitor portfolio-specific disruption intelligence through the Sentinel tab
+- Operate a production-style FastAPI backend with database-backed suppliers, jobs, alerts, audit logs, and system health
+- Run near-real-time scheduled Sentinel/risk/exposure refresh jobs with a local scheduler or worker process
+- Scope SaaS data by tenant using `X-Tenant-ID` and tenant API keys on protected FastAPI routes
 
 ## Architecture
 
@@ -28,10 +31,12 @@ A unified platform that combines quantitative risk modeling with supplier perfor
 | Data Upload | Smart schema mapping + generated network topology | Replace demo data with a live supplier portfolio |
 | Sentinel Agent | NewsAPI + OpenAI/Claude + local matching | Real-time disruption intelligence without sending supplier rows to LLMs |
 | NASA PRA Upgrades | LHS, Weibull beta, Fault Tree Analysis | Stabilize tail-risk estimates and explain root drivers |
+| FastAPI Backend | REST API + SQLAlchemy services | Integrations, monitoring, ingestion, alert acknowledgement |
+| Background Worker | APScheduler + local fallback | Scheduled Sentinel scans and risk/exposure recalculation |
 
 ## Current App Scope
 
-The Streamlit app currently exposes **8 tabs**:
+The Streamlit app currently exposes the original analytics tabs plus production command-center surfaces:
 
 1. Risk Dashboard
 2. Network Analysis
@@ -41,6 +46,9 @@ The Streamlit app currently exposes **8 tabs**:
 6. Decision Intelligence
 7. Data Upload
 8. Sentinel Agent
+9. Production Command Center
+10. Alerts & Health
+11. Admin & Audit (admin role only)
 
 When you upload a supplier file, the platform now uses that uploaded dataset across the full analytics flow. A generated network with inferred upstream links and scenarios is built automatically so the dashboard, graph analysis, cascade simulation, Monte Carlo tab, scorecard, decision tab, and Sentinel tab can all run from the same live portfolio.
 
@@ -64,6 +72,46 @@ streamlit run app.py
 
 Opens at **http://localhost:8501**
 
+Run the API backend:
+
+```bash
+uvicorn backend.main:app --host 0.0.0.0 --port 8000
+```
+
+Protected API calls in local/demo mode use:
+
+```bash
+curl -H "X-Tenant-ID: demo-tenant" -H "X-API-Key: demo-api-key" http://localhost:8000/suppliers
+```
+
+Run the background worker:
+
+```bash
+python -m backend.worker
+```
+
+Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+Streamlit opens at **http://localhost:8501** and FastAPI at **http://localhost:8000**.
+
+Render staging:
+
+```bash
+gh pr merge 1 --merge
+```
+
+Then open:
+
+```text
+https://dashboard.render.com/blueprint/new?repo=https://github.com/jayeshpatel731997-rgb/supplier-intelligence-platform
+```
+
+See `RENDER_STAGING_RUNBOOK.md` for the exact staging launch checklist.
+
 ## Real-Time Sentinel Setup
 
 For company-style deployment, configure API keys as environment variables, a local
@@ -84,6 +132,28 @@ Recommended Sentinel mode:
 - `Live News + AI`: NewsAPI fetches real articles, OpenAI or Claude classifies only public article text, and supplier matching/exposure is computed locally.
 - `NewsAPI Rules`: real articles with local keyword matching, no LLM.
 - `AI Scenario Briefing`: synthetic planning scenarios, useful for demos but not verified live news.
+
+## Enterprise Hardening Commands
+
+```bash
+python scripts/migrate.py --create-all-fallback
+python scripts/backfill_tenants.py
+python scripts/validate_tenant_schema.py
+python scripts/export_audit.py --tenant-id demo-tenant --format jsonl
+python scripts/collect_evidence.py --tenant-id demo-tenant
+locust -f load_tests/locustfile.py --host http://localhost:8000
+```
+
+Readiness docs:
+
+- `ENTERPRISE_SAAS_READINESS.md`
+- `MIGRATIONS.md`
+- `WORKER_ARCHITECTURE.md`
+- `AUTH_INTEGRATION.md`
+- `SECRETS_AND_KMS.md`
+- `BACKUP_RESTORE_RUNBOOK.md`
+- `LOAD_TESTING.md`
+- `COMPLIANCE_READINESS.md`
 - `Demo Mode`: no keys required.
 
 ## Pilot Security & Deployment
@@ -112,12 +182,25 @@ On Linux/macOS, replace `%cd%/data` with `$(pwd)/data`.
 ## Verification
 
 ```bash
-python -m unittest discover -s tests -t . -v
-python -m compileall app.py data_ingestion.py news_intelligence.py models agents tests
+python -m pytest -v
+python -m compileall .
 ruff check .
 ```
 
-GitHub Actions runs the same basic checks on push and pull request.
+GitHub Actions runs compile, unit tests, and Ruff on push and pull request.
+
+## Production Documentation
+
+- [Architecture](ARCHITECTURE.md)
+- [Deployment](DEPLOYMENT.md)
+- [Data Schema](DATA_SCHEMA.md)
+- [Operations Runbook](OPERATIONS_RUNBOOK.md)
+- [Production Readiness](PRODUCTION_READINESS.md)
+- [Security](SECURITY.md)
+
+## Multi-Tenant SaaS Notes
+
+The production foundation uses shared-schema tenancy. Business tables include `tenant_id`, repositories filter by tenant, and FastAPI protected routes require `X-Tenant-ID` plus a tenant-scoped API key. Local/demo mode seeds `demo-tenant` and `demo-api-key`; production deployments must create and rotate real tenant keys.
 
 ## Project Structure
 
