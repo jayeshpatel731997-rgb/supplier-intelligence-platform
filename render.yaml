@@ -11,7 +11,6 @@ services:
     runtime: docker
     plan: starter
     region: oregon
-    branch: codex/production-foundation
     autoDeploy: true
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
@@ -38,7 +37,6 @@ services:
     runtime: docker
     plan: starter
     region: oregon
-    branch: codex/production-foundation
     autoDeploy: true
     dockerfilePath: ./Dockerfile
     dockerContext: .
@@ -65,7 +63,6 @@ services:
     runtime: docker
     plan: starter
     region: oregon
-    branch: codex/production-foundation
     autoDeploy: true
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
@@ -95,7 +92,6 @@ services:
     runtime: docker
     plan: starter
     region: oregon
-    branch: codex/production-foundation
     schedule: "0 * * * *"
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
@@ -119,7 +115,6 @@ services:
     runtime: docker
     plan: starter
     region: oregon
-    branch: codex/production-foundation
     schedule: "30 */2 * * *"
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .

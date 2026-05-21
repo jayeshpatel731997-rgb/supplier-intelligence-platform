@@ -9,12 +9,12 @@ This deploys a staging SaaS stack from GitHub to Render:
 - Celery worker
 - Render cron jobs that enqueue Sentinel/risk/exposure tasks
 
-## 1. Push the branch
+## 1. Merge the deployment PR
 
-`render.yaml` deploys from branch `codex/production-foundation`. Push that branch before opening Render:
+`render.yaml` should live on the repository default branch before opening Render. Merge the deployment PR, or run:
 
 ```powershell
-git push origin codex/production-foundation
+gh pr merge 1 --merge
 ```
 
 ## 2. Open the Render Blueprint

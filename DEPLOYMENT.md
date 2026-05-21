@@ -60,7 +60,7 @@ The repo includes `render.yaml` for a GitHub-backed Render Blueprint. It creates
 Runbook:
 
 ```bash
-git push origin codex/production-foundation
+gh pr merge 1 --merge
 ```
 
 Then open:

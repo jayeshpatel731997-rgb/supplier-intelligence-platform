@@ -101,7 +101,7 @@ Streamlit opens at **http://localhost:8501** and FastAPI at **http://localhost:8
 Render staging:
 
 ```bash
-git push origin codex/production-foundation
+gh pr merge 1 --merge
 ```
 
 Then open:
