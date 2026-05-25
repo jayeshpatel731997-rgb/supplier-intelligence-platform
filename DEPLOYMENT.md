@@ -48,11 +48,20 @@ Services:
 
 ## Render Staging
 
-The repo includes `render.yaml` for a GitHub-backed Render Blueprint. It creates:
+The repo includes a phased GitHub-backed Render Blueprint.
+
+Phase 1 uses `render.yaml` and creates:
 
 - FastAPI backend
-- Streamlit command center
 - Render Postgres
+
+This is the safest first deployment because it validates Docker, migrations,
+Postgres, tenant seeding, and health endpoints before adding paid worker/cron
+services.
+
+Phase 2 uses `render.full.yaml` after Phase 1 is healthy and adds:
+
+- Streamlit command center
 - Render Key Value for Redis-compatible Celery broker
 - Celery worker
 - Cron jobs that enqueue Sentinel/risk/exposure tasks
@@ -60,7 +69,8 @@ The repo includes `render.yaml` for a GitHub-backed Render Blueprint. It creates
 Runbook:
 
 ```bash
-gh pr merge 1 --merge
+git checkout main
+git pull origin main
 ```
 
 Then open:
@@ -69,7 +79,10 @@ Then open:
 https://dashboard.render.com/blueprint/new?repo=https://github.com/jayeshpatel731997-rgb/supplier-intelligence-platform
 ```
 
-Fill `SUPPLIER_DEMO_API_KEY` and `SUPPLIER_APP_ADMIN_PASSWORD` with strong staging secrets. See `RENDER_STAGING_RUNBOOK.md` and `RENDER_ENV_CHECKLIST.md`.
+Render generates `SUPPLIER_DEMO_API_KEY` and `SUPPLIER_APP_ADMIN_PASSWORD` in
+the shared environment group. Reveal/copy the demo API key in Render to test
+protected routes. See `RENDER_STAGING_RUNBOOK.md` and
+`RENDER_ENV_CHECKLIST.md`.
 
 ## Postgres Configuration
 

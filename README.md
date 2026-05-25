@@ -101,7 +101,8 @@ Streamlit opens at **http://localhost:8501** and FastAPI at **http://localhost:8
 Render staging:
 
 ```bash
-gh pr merge 1 --merge
+git checkout main
+git pull origin main
 ```
 
 Then open:
@@ -110,7 +111,10 @@ Then open:
 https://dashboard.render.com/blueprint/new?repo=https://github.com/jayeshpatel731997-rgb/supplier-intelligence-platform
 ```
 
-See `RENDER_STAGING_RUNBOOK.md` for the exact staging launch checklist.
+The default `render.yaml` is a Phase 1 API + Postgres Blueprint. It proves the
+base SaaS backend before adding Streamlit, Redis, Celery, and cron from
+`render.full.yaml`. See `RENDER_STAGING_RUNBOOK.md` for the exact staging launch
+checklist.
 
 ## Real-Time Sentinel Setup
 
