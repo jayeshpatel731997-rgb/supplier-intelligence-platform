@@ -1,100 +1,118 @@
 # Render Staging Launch Runbook
 
-This deploys a staging SaaS stack from GitHub to Render:
+This repo now uses a phased Render launch so you do not pay for the full worker
+stack before the base API proves it can boot on Render.
 
-- FastAPI backend
-- Streamlit command center
-- Render Postgres
-- Render Key Value, Redis-compatible
-- Celery worker
-- Render cron jobs that enqueue Sentinel/risk/exposure tasks
+## Phase 1: API + Postgres
 
-## 1. Merge the deployment PR
+`render.yaml` deploys only:
 
-`render.yaml` should live on the repository default branch before opening Render. Merge the deployment PR, or run:
+- `supplier-intelligence-api`
+- `supplier-intelligence-postgres`
+
+This verifies the Docker build, dependency install, Postgres connection,
+Alembic/create-all fallback, tenant seed, request middleware, and health
+endpoints before adding Streamlit, Redis, Celery, and cron jobs.
+
+## 1. Confirm the Blueprint is on main
+
+`render.yaml` must live on the repository default branch before opening Render.
 
 ```powershell
-gh pr merge 1 --merge
+git checkout main
+git pull origin main
 ```
 
 ## 2. Open the Render Blueprint
-
-Use this deeplink after the branch is pushed:
 
 ```text
 https://dashboard.render.com/blueprint/new?repo=https://github.com/jayeshpatel731997-rgb/supplier-intelligence-platform
 ```
 
-Render will read `render.yaml` from the repo.
+Render reads `render.yaml` from the repo.
 
-## 3. Fill required secrets
+## 3. Review generated secrets
 
-Set these during Blueprint creation:
+Render can generate shared values in an environment group with `generateValue`.
+This is used for:
 
-- `SUPPLIER_DEMO_API_KEY`: generate a long random staging key; do not use `demo-api-key` on public staging.
-- `SUPPLIER_APP_ADMIN_PASSWORD`: strong Streamlit staging admin password.
+- `SUPPLIER_DEMO_API_KEY`
+- `SUPPLIER_APP_ADMIN_PASSWORD`
 
-Optional for richer Sentinel behavior:
+After the Blueprint is created, reveal/copy `SUPPLIER_DEMO_API_KEY` from the
+`supplier-intelligence-staging` environment group so you can test protected API
+routes. Do not paste the value into chat or commit it.
 
-- `NEWSAPI_KEY`
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
+Important: Render does not prompt for `sync: false` values inside environment
+groups, so this Blueprint avoids that pattern.
 
-Reserved for later WorkOS integration:
+## 4. Apply Phase 1
 
-- `WORKOS_API_KEY`
-- `WORKOS_CLIENT_ID`
+Click **Apply** and wait for:
 
-## 4. Apply and wait
+- Postgres status: available
+- API deploy status: live
+- API logs: migration command completes and Uvicorn starts
 
-Expected services:
+## 5. Verify Phase 1 health
 
-- `supplier-intelligence-api`
-- `supplier-intelligence-command-center`
-- `supplier-intelligence-celery-worker`
-- `supplier-intelligence-sentinel-cron`
-- `supplier-intelligence-risk-cron`
-- `supplier-intelligence-postgres`
-- `supplier-intelligence-redis`
-
-## 5. Verify health
-
-FastAPI:
+Replace the hostname if Render assigns a suffix.
 
 ```powershell
-curl https://supplier-intelligence-api.onrender.com/health
-curl https://supplier-intelligence-api.onrender.com/live
-curl https://supplier-intelligence-api.onrender.com/ready
-curl https://supplier-intelligence-api.onrender.com/worker/health
+curl.exe https://supplier-intelligence-api.onrender.com/health
+curl.exe https://supplier-intelligence-api.onrender.com/live
+curl.exe https://supplier-intelligence-api.onrender.com/ready
+curl.exe https://supplier-intelligence-api.onrender.com/worker/health
 ```
 
 Protected API smoke:
 
 ```powershell
-curl `
+$env:SUPPLIER_DEMO_API_KEY="<value copied from Render env group>"
+curl.exe `
   -H "X-Tenant-ID: demo-tenant" `
-  -H "X-API-Key: <SUPPLIER_DEMO_API_KEY>" `
+  -H "X-API-Key: $env:SUPPLIER_DEMO_API_KEY" `
   https://supplier-intelligence-api.onrender.com/system/status
 ```
 
-Streamlit:
+Expected result: HTTP 200 with database/system status JSON.
 
-```text
-https://supplier-intelligence-command-center.onrender.com
-```
+## Phase 2: Full staging stack
 
-## 6. Migration and tenant checks
-
-The API and worker run `python scripts/migrate.py` on startup. To inspect manually from a service shell:
+Only after Phase 1 is healthy, promote the full Blueprint:
 
 ```powershell
-python scripts/validate_tenant_schema.py
-python scripts/backfill_tenants.py
+Copy-Item render.full.yaml render.yaml
+git add render.yaml render.full.yaml RENDER_STAGING_RUNBOOK.md RENDER_ENV_CHECKLIST.md DEPLOYMENT.md README.md
+git commit -m "Promote Render full staging stack"
+git push origin main
 ```
 
-Do not run demo backfill in production mode.
+The full stack adds:
 
-## 7. WorkOS later
+- `supplier-intelligence-command-center`
+- `supplier-intelligence-redis`
+- `supplier-intelligence-celery-worker`
+- `supplier-intelligence-sentinel-cron`
+- `supplier-intelligence-risk-cron`
+
+The full stack uses paid worker/cron web-service instance types. Check Render's
+review screen before applying.
+
+## Optional keys after Phase 1
+
+Add these manually to the `supplier-intelligence-staging` environment group only
+when you are ready to test richer integrations:
+
+- `NEWSAPI_KEY`
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `WORKOS_API_KEY`
+- `WORKOS_CLIENT_ID`
+
+The app is designed to run without these keys in demo mode.
+
+## WorkOS later
 
 Keep `AUTH_PROVIDER=local` for this staging launch. When ready:
 
@@ -104,7 +122,7 @@ Keep `AUTH_PROVIDER=local` for this staging launch. When ready:
 4. Implement the real WorkOS/OIDC callback and token validation.
 5. Switch `AUTH_PROVIDER` from `local` to `oidc` or `workos` after tests pass.
 
-## 8. Rollback
+## Rollback
 
 For a bad deploy:
 
@@ -113,4 +131,5 @@ For a bad deploy:
 3. Select the previous successful deploy.
 4. Roll back.
 
-For a bad migration, restore Postgres from a verified backup before applying code rollback.
+For a bad migration, restore Postgres from a verified backup before applying a
+code rollback.
