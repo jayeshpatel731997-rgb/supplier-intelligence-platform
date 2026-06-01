@@ -1,63 +1,117 @@
 # Render Environment Variable Checklist
 
-## Phase 1 Blueprint
+Use this checklist for real Render + Postgres staging. Do not paste secrets into
+GitHub or docs. Set secret values in the Render Dashboard or a Render-managed
+secret source.
 
-Render sets these from managed services:
+## Render-Managed Values
+
+Render injects these from the managed Postgres service:
 
 - `SUPPLIER_DATABASE_URL`
 - `DATABASE_URL`
 
-Render generates these in the shared environment group:
+`render.full.yaml` also injects `REDIS_URL` from Render Key Value for the API,
+worker, Streamlit service, and cron jobs.
 
-- `SUPPLIER_DEMO_API_KEY`
-- `SUPPLIER_APP_ADMIN_PASSWORD`
+## Blueprint Defaults
 
-Configured non-secrets:
+`render.yaml` and `render.full.yaml` set these non-secret values:
 
-- `SUPPLIER_SECURITY_MODE=local`
-- `SUPPLIER_DEPLOYMENT_MODE=render-staging-phase1`
-- `SUPPLIER_DEMO_MODE=true`
-- `AUTH_PROVIDER=local`
+- `SUPPLIER_SECURITY_MODE=production`
+- `SUPPLIER_DEPLOYMENT_MODE=render-staging-phase1` or `render-staging-full`
+- `SUPPLIER_DEMO_MODE=false`
+- `AUTH_PROVIDER=oidc`
 - `AUTH_ALLOW_LOCAL_IN_PRODUCTION=false`
-- `DEFAULT_TENANT_ID=demo-tenant`
 - `SUPPLIER_APP_ADMIN_USER=staging-admin`
 - `RATE_LIMIT_ENABLED=true`
 - `RATE_LIMIT_REQUESTS=300`
 - `RATE_LIMIT_WINDOW_SECONDS=60`
+- `SUPPLIER_MAX_UPLOAD_BYTES=5000000`
+- `SUPPLIER_ALLOWED_UPLOAD_EXTENSIONS=.csv,.xlsx,.xls,.json`
+- `SUPPLIER_ALLOWED_UPLOAD_MIME_TYPES=text/csv,application/csv,text/plain,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+- `SUPPLIER_UPLOAD_STORAGE_PROVIDER=s3`
+- `SUPPLIER_UPLOAD_STORAGE_KEY_PREFIX=uploads`
+- `SUPPLIER_UPLOAD_SCANNER_REQUIRED=false`
+- `SUPPLIER_UPLOAD_SCANNER_PROVIDER=none`
 - `RETENTION_ENABLED=false`
 - `SECRETS_PROVIDER=env`
 - `KMS_PROVIDER=local`
-- `CORS_ALLOW_ORIGINS=*`
-- `WORKER_MODE=local`
+- `WORKER_MODE=local` in Phase 1, `celery` for full-stack worker/cron services
 - `SUPPLIER_SCHEDULER_ENABLED=false`
 
-## Phase 2 Full Stack
+Render also generates:
 
-`render.full.yaml` additionally sets:
+- `SUPPLIER_APP_ADMIN_PASSWORD`
 
-- `REDIS_URL` from Render Key Value
-- `WORKER_MODE=celery` on the worker and cron services
+## Required Manual Values Before `/ready` Passes
 
-## Optional Manual Values
+Set these for real staging:
 
-Add these only after the first API deploy is healthy:
+- `CORS_ALLOW_ORIGINS=https://<your-streamlit-or-ui-origin>`
+- `OIDC_ISSUER_URL`
+- `OIDC_CLIENT_ID`
+- `OIDC_CLIENT_SECRET`
+- `OIDC_AUDIENCE` when token `aud` differs from `OIDC_CLIENT_ID`
+- `OIDC_JWKS_URL`
+- `OIDC_ALGORITHMS=RS256` or the exact algorithms your IdP uses
+- `OIDC_CLOCK_SKEW_SECONDS=60`
+- `SUPPLIER_UPLOAD_STORAGE_BUCKET`
+- `SUPPLIER_UPLOAD_STORAGE_REGION`
+- `SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL`
+- `SUPPLIER_UPLOAD_STORAGE_ACCESS_KEY_ID`
+- `SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY`
+
+If policy requires upload scanning:
+
+- `SUPPLIER_UPLOAD_SCANNER_REQUIRED=true`
+- `SUPPLIER_UPLOAD_SCANNER_PROVIDER=<scanner-provider>`
+- `SUPPLIER_UPLOAD_SCANNER_ENDPOINT_URL=<scanner-endpoint>`
+
+Optional live intelligence values:
 
 - `NEWSAPI_KEY`
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
-- `WORKOS_API_KEY`
-- `WORKOS_CLIENT_ID`
 
-Do not put `sync: false` secrets in `envVarGroups`; Render ignores that pattern.
-Use `generateValue: true` for generated shared secrets or add secrets manually in
-the Render Dashboard.
+## Local-Auth Staging Exception
 
-## Before Sharing Staging Externally
+OIDC is the recommended staging path. If you deliberately use local API-key auth
+for a short staging window, set all of the following explicitly:
 
-- Reveal/copy `SUPPLIER_DEMO_API_KEY` from Render and test protected routes.
-- Rotate `SUPPLIER_DEMO_API_KEY` if it was exposed.
-- Use a strong `SUPPLIER_APP_ADMIN_PASSWORD`.
-- Restrict CORS from `*` to the Streamlit URL after Phase 2.
-- Set up uptime checks against `/health`.
-- Add Sentry or another error monitor.
-- Decide whether staging should remain in demo mode.
+- `AUTH_PROVIDER=local`
+- `AUTH_ALLOW_LOCAL_IN_PRODUCTION=true`
+- Create tenant memberships/API keys through an admin path or controlled seed
+  process; do not rely on demo keys in real staging.
+
+## Deploy Validation
+
+Run after the Render deploy:
+
+```powershell
+$env:STAGING_BASE_URL="https://supplier-intelligence-api.onrender.com"
+python scripts/smoke_staging.py
+```
+
+For an authenticated read check, add either:
+
+```powershell
+$env:STAGING_BEARER_TOKEN="<oidc-token>"
+```
+
+or, only for the local-auth exception:
+
+```powershell
+$env:STAGING_TENANT_ID="<tenant-id>"
+$env:STAGING_API_KEY="<tenant-api-key>"
+```
+
+## Manual Blockers
+
+- Real OIDC/SAML provider configuration and tenant membership sync are manual.
+- Real S3-compatible object storage bucket, credentials, and lifecycle policy
+  are manual.
+- Real scanner integration is manual; the code currently has a scanner
+  interface/stub and fail-closed readiness checks.
+- Render Postgres backup/restore validation is manual.
+- SIEM/log drain, metrics, tracing, and alert routing are later tasks.

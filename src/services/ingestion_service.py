@@ -23,6 +23,8 @@ class IngestionServiceResult:
     errors: list[str]
     warnings: list[str]
     column_mapping: dict
+    upload_storage_provider: str = ""
+    upload_key: str = ""
 
 
 class IngestionService:
@@ -30,7 +32,14 @@ class IngestionService:
         self.session = session
         self.tenant_id = tenant_id
 
-    def process_upload(self, file_bytes: bytes, filename: str, username: str = "system") -> IngestionServiceResult:
+    def process_upload(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        username: str = "system",
+        upload_storage_provider: str = "",
+        upload_key: str = "",
+    ) -> IngestionServiceResult:
         job = IngestionJob(tenant_id=self.tenant_id, filename=filename, status="running")
         self.session.add(job)
         self.session.flush()
@@ -52,7 +61,7 @@ class IngestionService:
                 "ingestion.upload_completed",
                 username=username,
                 role="system",
-                details={"filename": filename, "row_count": result.row_count},
+                details={"filename": filename, "row_count": result.row_count, "upload_key": upload_key},
             )
         else:
             job.status = "failed"
@@ -74,4 +83,6 @@ class IngestionService:
             errors=result.errors,
             warnings=result.warnings,
             column_mapping=result.column_mapping,
+            upload_storage_provider=upload_storage_provider,
+            upload_key=upload_key,
         )

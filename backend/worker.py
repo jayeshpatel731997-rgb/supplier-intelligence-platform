@@ -15,7 +15,8 @@ logger = get_logger(__name__)
 
 settings = get_settings()
 SessionFactory = create_session_factory(settings)
-init_database(SessionFactory)
+if not settings.is_production:
+    init_database(SessionFactory)
 celery_app = register_celery_tasks(build_celery_app(settings), settings, SessionFactory)
 
 

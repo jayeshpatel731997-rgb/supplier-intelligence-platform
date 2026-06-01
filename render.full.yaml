@@ -17,7 +17,7 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
     dockerCommand: /bin/sh -c "python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"
-    healthCheckPath: /health
+    healthCheckPath: /live
     envVars:
       - fromGroup: supplier-intelligence-staging
       - key: SUPPLIER_DATABASE_URL
@@ -148,19 +148,17 @@ envVarGroups:
   - name: supplier-intelligence-staging
     envVars:
       - key: SUPPLIER_SECURITY_MODE
-        value: local
+        value: production
       - key: SUPPLIER_DEPLOYMENT_MODE
         value: render-staging-full
       - key: SUPPLIER_DEMO_MODE
-        value: "true"
+        value: "false"
       - key: AUTH_PROVIDER
-        value: local
+        value: oidc
       - key: AUTH_ALLOW_LOCAL_IN_PRODUCTION
         value: "false"
-      - key: DEFAULT_TENANT_ID
-        value: demo-tenant
-      - key: SUPPLIER_DEMO_API_KEY
-        generateValue: true
+      - key: CORS_ALLOW_ORIGINS
+        value: ""
       - key: SUPPLIER_APP_ADMIN_USER
         value: staging-admin
       - key: SUPPLIER_APP_ADMIN_PASSWORD
@@ -173,14 +171,26 @@ envVarGroups:
         value: "300"
       - key: RATE_LIMIT_WINDOW_SECONDS
         value: "60"
+      - key: SUPPLIER_MAX_UPLOAD_BYTES
+        value: "5000000"
+      - key: SUPPLIER_ALLOWED_UPLOAD_EXTENSIONS
+        value: ".csv,.xlsx,.xls,.json"
+      - key: SUPPLIER_ALLOWED_UPLOAD_MIME_TYPES
+        value: text/csv,application/csv,text/plain,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+      - key: SUPPLIER_UPLOAD_STORAGE_PROVIDER
+        value: s3
+      - key: SUPPLIER_UPLOAD_STORAGE_KEY_PREFIX
+        value: uploads
+      - key: SUPPLIER_UPLOAD_SCANNER_REQUIRED
+        value: "false"
+      - key: SUPPLIER_UPLOAD_SCANNER_PROVIDER
+        value: none
       - key: RETENTION_ENABLED
         value: "false"
       - key: SECRETS_PROVIDER
         value: env
       - key: KMS_PROVIDER
         value: local
-      - key: CORS_ALLOW_ORIGINS
-        value: "*"
       - key: WORKER_MODE
         value: local
       - key: SUPPLIER_SCHEDULER_ENABLED

@@ -84,3 +84,11 @@ def require_permission(context: TenantContext, permission: str) -> bool:
 
 def role_at_least(role: str, minimum: str) -> bool:
     return ROLE_ORDER.get(role, 0) >= ROLE_ORDER.get(minimum, 0)
+
+
+def can_grant_role(granter: TenantContext, target_role: str) -> bool:
+    if target_role not in ROLE_ORDER:
+        return False
+    if granter.is_platform_admin:
+        return True
+    return ROLE_ORDER.get(target_role, 0) <= ROLE_ORDER.get(granter.role, 0)

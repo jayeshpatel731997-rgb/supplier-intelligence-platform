@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.config import Settings, get_settings
 from src.models import Base
+from src.observability.logging import redact_secret_text
 
 
 def _sqlite_path(database_url: str) -> Path | None:
@@ -113,7 +114,7 @@ def database_health(settings: Settings | None = None) -> dict:
             conn.execute(text("SELECT 1"))
         return {"ok": True, "driver": active.database_driver, "url": _safe_url(active.database_url)}
     except Exception as exc:
-        return {"ok": False, "driver": active.database_driver, "url": _safe_url(active.database_url), "error": str(exc)}
+        return {"ok": False, "driver": active.database_driver, "url": _safe_url(active.database_url), "error": redact_secret_text(exc)}
 
 
 def _safe_url(database_url: str) -> str:

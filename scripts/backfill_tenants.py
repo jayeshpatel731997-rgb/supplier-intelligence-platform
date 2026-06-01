@@ -14,6 +14,8 @@ from src.services.migration_service import backfill_demo_tenant
 
 def main() -> int:
     settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Demo tenant backfill is disabled in production mode.")
     factory = create_session_factory(settings)
     init_database(factory)
     with factory() as session:

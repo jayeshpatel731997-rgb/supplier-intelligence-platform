@@ -19,8 +19,10 @@ def main() -> int:
     parser.add_argument("--tenant-id", default=DEMO_TENANT_ID)
     parser.add_argument("--format", choices=["jsonl", "csv"], default="jsonl")
     args = parser.parse_args()
-    factory = create_session_factory(get_settings())
-    init_database(factory)
+    settings = get_settings()
+    factory = create_session_factory(settings)
+    if not settings.is_production:
+        init_database(factory)
     with factory() as session:
         service = AuditExportService(session, args.tenant_id)
         payload = service.export_csv() if args.format == "csv" else service.export_jsonl()

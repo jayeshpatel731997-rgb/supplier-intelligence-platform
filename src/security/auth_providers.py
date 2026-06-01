@@ -7,8 +7,14 @@ for local tests.
 
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass, field
+from urllib.request import urlopen
 from typing import Any
+
+import jwt
+from jwt import InvalidTokenError
 
 from src.config import Settings
 from src.tenancy import DEMO_TENANT_ID, TenantContext
@@ -78,23 +84,65 @@ class OIDCAuthProvider(AuthProvider):
             issues.append("OIDC_ISSUER_URL is required.")
         if not self.settings.oidc_client_id:
             issues.append("OIDC_CLIENT_ID is required.")
-        if not self.settings.oidc_audience:
-            issues.append("OIDC_AUDIENCE is recommended for API token validation.")
+        if not self.settings.oidc_effective_audience:
+            issues.append("OIDC_AUDIENCE or OIDC_CLIENT_ID is required for API token validation.")
+        if not self.settings.oidc_jwks_url:
+            issues.append("OIDC_JWKS_URL is required.")
+        if not self.settings.oidc_allowed_algorithms:
+            issues.append("OIDC_ALGORITHMS must include at least one JWT signing algorithm.")
         return {
             "ok": not issues,
             "provider": self.name,
             "issuer": self.settings.oidc_issuer_url,
-            "audience": self.settings.oidc_audience,
+            "audience": self.settings.oidc_effective_audience,
             "issues": issues,
-            "jwks_url": f"{self.settings.oidc_issuer_url.rstrip('/')}/.well-known/jwks.json"
-            if self.settings.oidc_issuer_url
-            else "",
+            "jwks_url": self.settings.oidc_jwks_url,
+            "algorithms": self.settings.oidc_allowed_algorithms,
+            "clock_skew_seconds": self.settings.oidc_clock_skew_seconds,
         }
 
     def verify_token(self, token: str) -> AuthenticatedPrincipal:
         if not token:
             raise ValueError("OIDC bearer token is required.")
-        raise NotImplementedError("Configure PyJWT/JWKS verification for the selected identity provider.")
+        runtime = self.validate_runtime()
+        if not runtime["ok"]:
+            raise ValueError("OIDC runtime is not configured.")
+
+        try:
+            header = jwt.get_unverified_header(token)
+            jwk = self._select_jwk(str(header.get("kid") or ""))
+            key = _jwk_to_key(jwk)
+            claims = jwt.decode(
+                token,
+                key=key,
+                algorithms=self.settings.oidc_allowed_algorithms,
+                issuer=self.settings.oidc_issuer_url,
+                audience=self.settings.oidc_effective_audience,
+                leeway=self.settings.oidc_clock_skew_seconds,
+            )
+        except (InvalidTokenError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("Invalid OIDC bearer token.") from exc
+        return self.map_claims(claims)
+
+    def _load_jwks(self) -> dict[str, Any]:
+        if self.settings.oidc_jwks_json:
+            return json.loads(self.settings.oidc_jwks_json)
+        with urlopen(self.settings.oidc_jwks_url, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _select_jwk(self, kid: str) -> dict[str, Any]:
+        jwks = self._load_jwks()
+        keys = jwks.get("keys") or []
+        if not isinstance(keys, list) or not keys:
+            raise ValueError("OIDC JWKS does not contain signing keys.")
+        if kid:
+            for key in keys:
+                if str(key.get("kid") or "") == kid:
+                    return key
+            raise ValueError("OIDC signing key not found.")
+        if len(keys) == 1:
+            return keys[0]
+        raise ValueError("OIDC token missing key id.")
 
 
 class SAMLAuthProvider(AuthProvider):
@@ -143,3 +191,14 @@ def _role_from_claims(claims: dict[str, Any]) -> str:
         if clean in allowed:
             return clean
     return "viewer"
+
+
+def _base64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
+
+
+def _jwk_to_key(jwk: dict[str, Any]):
+    if jwk.get("kty") == "oct":
+        return _base64url_decode(str(jwk["k"]))
+    return jwt.PyJWK.from_dict(jwk).key

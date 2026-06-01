@@ -16,7 +16,7 @@ A unified platform that combines quantitative risk modeling with supplier perfor
 - Monitor portfolio-specific disruption intelligence through the Sentinel tab
 - Operate a production-style FastAPI backend with database-backed suppliers, jobs, alerts, audit logs, and system health
 - Run near-real-time scheduled Sentinel/risk/exposure refresh jobs with a local scheduler or worker process
-- Scope SaaS data by tenant using `X-Tenant-ID` and tenant API keys on protected FastAPI routes
+- Scope SaaS data by tenant using tenant API keys in local/demo mode or verified OIDC bearer tokens in OIDC mode
 
 ## Architecture
 
@@ -84,6 +84,45 @@ Protected API calls in local/demo mode use:
 curl -H "X-Tenant-ID: demo-tenant" -H "X-API-Key: demo-api-key" http://localhost:8000/suppliers
 ```
 
+When `AUTH_PROVIDER=oidc`, protected API routes require an OIDC JWT:
+
+```bash
+curl -H "Authorization: Bearer <id-or-access-token>" http://localhost:8000/suppliers
+```
+
+The token is verified against issuer, audience, algorithm, expiry/nbf with clock
+skew, and the configured JWKS. The tenant and user must also exist as an active
+local membership, so IdP claims cannot grant access to unknown tenants.
+
+Health endpoints:
+
+- `/live` returns a lightweight process liveness response and does not require database initialization.
+- `/health` includes database and API state and reports `degraded` instead of crashing when database-backed status queries fail.
+- `/ready` is the traffic gate: it returns HTTP `200` only when startup initialization, database checks, and production runtime checks pass; otherwise it returns HTTP `503` with `status: degraded`.
+- In production mode, readiness also blocks wildcard CORS, incomplete OIDC/JWKS/SAML configuration, missing schema/migrations, and other unsafe runtime defaults. API and worker startup do not auto-create production schema; run Alembic first.
+- `/system/status` is protected and adds worker, Sentinel, auth, rate limit, retention, SIEM, and production configuration checks.
+
+Supplier uploads are intentionally bounded for pilot deployments. Configure:
+
+```bash
+SUPPLIER_MAX_UPLOAD_BYTES=5000000
+SUPPLIER_ALLOWED_UPLOAD_EXTENSIONS=.csv,.xlsx,.xls,.json
+SUPPLIER_ALLOWED_UPLOAD_MIME_TYPES=text/csv,application/csv,text/plain,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+SUPPLIER_UPLOAD_STORAGE_PROVIDER=local
+SUPPLIER_UPLOAD_STORAGE_PATH=data/uploads
+```
+
+FastAPI uploads are checked for safe filenames, tenant-scoped storage keys,
+allowed extensions and MIME types when a useful MIME type is provided, and the
+configured size limit before the existing CSV/Excel/JSON ingestion parser runs.
+Local/demo mode stores upload objects under `data/uploads/<tenant>/...`.
+Production mode fails `/ready` unless upload storage is configured as
+S3-compatible object storage with bucket, endpoint, and credentials. If
+`SUPPLIER_UPLOAD_SCANNER_REQUIRED=true`, production readiness also fails until a
+scanner provider and endpoint are configured. The scanner interface is a safe
+stub for now; do not treat it as malware inspection until connected to a real
+scanner service.
+
 Run the background worker:
 
 ```bash
@@ -114,7 +153,17 @@ https://dashboard.render.com/blueprint/new?repo=https://github.com/jayeshpatel73
 The default `render.yaml` is a Phase 1 API + Postgres Blueprint. It proves the
 base SaaS backend before adding Streamlit, Redis, Celery, and cron from
 `render.full.yaml`. See `RENDER_STAGING_RUNBOOK.md` for the exact staging launch
-checklist.
+checklist. Real Render staging runs with `SUPPLIER_SECURITY_MODE=production`,
+`SUPPLIER_DEMO_MODE=false`, Alembic migrations, explicit CORS, complete auth
+provider settings, and S3-compatible upload storage. `/live` is the Render
+process health check; `/ready` is the configuration and database traffic gate.
+
+Smoke test staging after deploy:
+
+```bash
+set STAGING_BASE_URL=https://supplier-intelligence-api.onrender.com
+python scripts/smoke_staging.py
+```
 
 ## Real-Time Sentinel Setup
 
@@ -139,14 +188,32 @@ Recommended Sentinel mode:
 
 ## Enterprise Hardening Commands
 
+Local/demo:
+
 ```bash
 python scripts/migrate.py --create-all-fallback
 python scripts/backfill_tenants.py
 python scripts/validate_tenant_schema.py
+```
+
+Render/Postgres staging:
+
+```bash
+python scripts/migrate.py
+python scripts/validate_tenant_schema.py
+python scripts/smoke_staging.py --base-url https://supplier-intelligence-api.onrender.com
+```
+
+Operational exports and evidence:
+
+```bash
 python scripts/export_audit.py --tenant-id demo-tenant --format jsonl
 python scripts/collect_evidence.py --tenant-id demo-tenant
 locust -f load_tests/locustfile.py --host http://localhost:8000
 ```
+
+For production-like Postgres, run `python scripts/migrate.py` without the
+`--create-all-fallback` flag before starting the API or worker.
 
 Readiness docs:
 
@@ -204,7 +271,7 @@ GitHub Actions runs compile, unit tests, and Ruff on push and pull request.
 
 ## Multi-Tenant SaaS Notes
 
-The production foundation uses shared-schema tenancy. Business tables include `tenant_id`, repositories filter by tenant, and FastAPI protected routes require `X-Tenant-ID` plus a tenant-scoped API key. Local/demo mode seeds `demo-tenant` and `demo-api-key`; production deployments must create and rotate real tenant keys.
+The production foundation uses shared-schema tenancy. Business tables include `tenant_id`, repositories filter by tenant, and FastAPI protected routes use the same `TenantContext` for API-key and OIDC flows. Local/demo mode seeds `demo-tenant` and `demo-api-key`; OIDC mode verifies bearer tokens and then requires an active local tenant membership before RBAC permissions are applied.
 
 ## Project Structure
 
