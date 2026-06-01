@@ -38,6 +38,8 @@ services:
       WORKER_MODE: local
       REDIS_URL: redis://redis:6379/0
       RATE_LIMIT_ENABLED: "true"
+      SUPPLIER_MAX_UPLOAD_BYTES: "5000000"
+      SUPPLIER_ALLOWED_UPLOAD_EXTENSIONS: ".csv,.xlsx,.xls,.json"
       NEWSAPI_KEY: ${NEWSAPI_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -62,6 +64,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       SUPPLIER_SENTINEL_INTERVAL_MINUTES: 60
       SUPPLIER_RISK_INTERVAL_MINUTES: 120
+      SUPPLIER_MAX_UPLOAD_BYTES: "5000000"
+      SUPPLIER_ALLOWED_UPLOAD_EXTENSIONS: ".csv,.xlsx,.xls,.json"
       NEWSAPI_KEY: ${NEWSAPI_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -84,6 +88,8 @@ services:
       SUPPLIER_DATABASE_URL: postgresql+psycopg://supplier_app:supplier_app_change_me@postgres:5432/supplier_intelligence
       WORKER_MODE: celery
       REDIS_URL: redis://redis:6379/0
+      SUPPLIER_MAX_UPLOAD_BYTES: "5000000"
+      SUPPLIER_ALLOWED_UPLOAD_EXTENSIONS: ".csv,.xlsx,.xls,.json"
       NEWSAPI_KEY: ${NEWSAPI_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

@@ -19,8 +19,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Collect compliance evidence for a tenant.")
     parser.add_argument("--tenant-id", default=DEMO_TENANT_ID)
     args = parser.parse_args()
-    factory = create_session_factory(get_settings())
-    init_database(factory)
+    settings = get_settings()
+    factory = create_session_factory(settings)
+    if not settings.is_production:
+        init_database(factory)
     with factory() as session:
         service = EvidenceService(session, args.tenant_id)
         payload = {

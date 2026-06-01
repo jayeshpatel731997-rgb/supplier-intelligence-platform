@@ -86,6 +86,7 @@ def test_auth_provider_scaffold_maps_oidc_claims_and_blocks_unsafe_local_product
             oidc_issuer_url="https://issuer.example.com",
             oidc_client_id="client-id",
             oidc_audience="supplier-api",
+            oidc_jwks_url="https://issuer.example.com/.well-known/jwks.json",
         )
     )
     mapped = oidc.map_claims(

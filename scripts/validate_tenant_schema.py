@@ -14,8 +14,10 @@ from src.services.migration_service import validate_tenant_schema
 
 
 def main() -> int:
-    factory = create_session_factory(get_settings())
-    init_database(factory)
+    settings = get_settings()
+    factory = create_session_factory(settings)
+    if not settings.is_production:
+        init_database(factory)
     with factory() as session:
         result = validate_tenant_schema(session)
     print(json.dumps(result, indent=2, default=str))

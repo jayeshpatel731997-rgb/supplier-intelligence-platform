@@ -44,7 +44,7 @@ def validate_tenant_schema(session: Session) -> dict:
         elif by_name["tenant_id"].get("nullable"):
             nullable_tenant_id.append(table)
     return {
-        "ok": not missing_tenant_id and not nullable_tenant_id,
+        "ok": not missing_tables and not missing_tenant_id and not nullable_tenant_id,
         "known_model_tables": sorted(Base.metadata.tables.keys()),
         "business_tables": sorted(BUSINESS_TABLES),
         "missing_tables": missing_tables,

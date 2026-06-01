@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.config import Settings
+from src.config import Settings, get_settings
 from src.database import create_session_factory, database_health, init_database
 from src.repositories.alerts import AlertRepository
 from src.repositories.audit import AuditRepository
@@ -227,3 +227,157 @@ def test_demo_tenant_seed_creates_membership_and_api_key(tmp_path):
         assert seed.api_key == "demo-api-key"
         assert tenants.validate_api_key(DEMO_TENANT_ID, "demo-api-key").role == "platform_admin"
         assert tenants.validate_api_key(DEMO_TENANT_ID, "wrong") is None
+
+
+def test_invalid_numeric_environment_values_fall_back_to_defaults(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_REQUESTS", "not-an-int")
+    monkeypatch.setenv("SUPPLIER_MAX_UPLOAD_BYTES", "also-bad")
+    get_settings.cache_clear()
+
+    try:
+        settings = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert settings.rate_limit_requests == 120
+    assert settings.max_upload_bytes == 5_000_000
+
+
+def test_production_runtime_rejects_wildcard_cors_and_incomplete_oidc():
+    settings = Settings(
+        security_mode="production",
+        database_url="postgresql+psycopg://user:pass@db:5432/app",
+        demo_mode=False,
+        auth_provider="oidc",
+        oidc_issuer_url="https://issuer.example.com",
+        oidc_client_id="supplier-platform",
+        oidc_audience="supplier-api",
+        cors_allow_origins="*",
+    )
+
+    issues = settings.validate_runtime()
+
+    assert any("CORS" in issue for issue in issues)
+    assert any("OIDC_CLIENT_SECRET" in issue for issue in issues)
+
+
+def test_upload_storage_defaults_to_local_demo_path(tmp_path):
+    settings = Settings(upload_storage_path=str(tmp_path / "uploads"))
+
+    assert settings.upload_storage_provider == "local"
+    assert settings.upload_storage_path.endswith("uploads")
+    assert settings.allowed_upload_mime_types
+
+
+def test_production_runtime_requires_complete_object_storage_config():
+    settings = Settings(
+        security_mode="production",
+        database_url="postgresql+psycopg://user:pass@db:5432/app",
+        demo_mode=False,
+        auth_provider="local",
+        auth_allow_local_in_production=True,
+        cors_allow_origins="https://staging.example.com",
+        upload_storage_provider="s3",
+        upload_storage_bucket="",
+        upload_storage_endpoint_url="",
+    )
+
+    issues = settings.validate_runtime()
+
+    assert any("SUPPLIER_UPLOAD_STORAGE_BUCKET" in issue for issue in issues)
+    assert any("SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL" in issue for issue in issues)
+
+
+def test_production_runtime_fails_when_upload_scanner_is_required_but_missing():
+    settings = Settings(
+        security_mode="production",
+        database_url="postgresql+psycopg://user:pass@db:5432/app",
+        demo_mode=False,
+        auth_provider="local",
+        auth_allow_local_in_production=True,
+        cors_allow_origins="https://staging.example.com",
+        upload_storage_provider="s3",
+        upload_storage_bucket="supplier-uploads",
+        upload_storage_endpoint_url="https://object-storage.example.com",
+        upload_storage_access_key_id="access-key",
+        upload_storage_secret_access_key="secret-key",
+        upload_scanner_required=True,
+        upload_scanner_provider="none",
+    )
+
+    issues = settings.validate_runtime()
+
+    assert any("SUPPLIER_UPLOAD_SCANNER_PROVIDER" in issue for issue in issues)
+
+
+def test_system_status_reports_degraded_when_database_queries_fail(monkeypatch):
+    from src.services import system_service
+
+    class BrokenSessionFactory:
+        def __call__(self):
+            raise RuntimeError("database unavailable")
+
+    settings = Settings(security_mode="production", database_url="postgresql+psycopg://user:pass@db:5432/app")
+    monkeypatch.setattr(
+        system_service,
+        "database_health",
+        lambda _settings: {
+            "ok": False,
+            "driver": "postgresql+psycopg",
+            "url": "postgresql+psycopg://***:***@db:5432/app",
+            "error": "database unavailable",
+        },
+    )
+
+    status = system_service.system_status(settings, BrokenSessionFactory())
+
+    assert status["database"]["ok"] is False
+    assert status["api"]["status"] == "degraded"
+    assert status["monitored_suppliers"] == 0
+    assert status["open_alerts"] == 0
+    assert status["worker"]["status"] == "unknown"
+    assert "database unavailable" in status["status_error"]
+
+
+def test_system_status_redacts_credentials_from_startup_errors(monkeypatch):
+    from src.services import system_service
+
+    settings = Settings(
+        security_mode="production",
+        database_url="postgresql+psycopg://user:super-secret-password@db:5432/app",
+        demo_mode=False,
+        auth_provider="local",
+        auth_allow_local_in_production=True,
+        cors_allow_origins="https://staging.example.com",
+    )
+    monkeypatch.setattr(
+        system_service,
+        "database_health",
+        lambda _settings: {
+            "ok": True,
+            "driver": "postgresql+psycopg",
+            "url": "postgresql+psycopg://***:***@db:5432/app",
+        },
+    )
+
+    status = system_service.system_status(
+        settings,
+        None,
+        startup_error="could not connect to postgresql+psycopg://user:super-secret-password@db:5432/app",
+    )
+
+    assert "super-secret-password" not in status["status_error"]
+    assert "***:***@db:5432/app" in status["status_error"]
+
+
+def test_tenant_schema_validation_fails_when_business_tables_are_missing(tmp_path):
+    from src.services.migration_service import validate_tenant_schema
+
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'empty.db'}")
+    factory = create_session_factory(settings)
+
+    with factory() as session:
+        result = validate_tenant_schema(session)
+
+    assert result["ok"] is False
+    assert "suppliers" in result["missing_tables"]

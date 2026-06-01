@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import asdict
+from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from src.config import Settings, get_settings
 from src.database import create_session_factory, init_database, seed_demo_tenant
+from src.observability.logging import get_logger, redact_secret_text
 from src.repositories.alerts import AlertRepository
 from src.repositories.audit import AuditRepository
 from src.repositories.jobs import JobRepository
@@ -27,33 +30,78 @@ from src.services.risk_service import RiskService
 from src.services.scheduler import LocalJobScheduler
 from src.services.sentinel_service import SentinelService
 from src.services.system_service import system_status
+from src.services.upload_storage import (
+    UploadSafetyError,
+    build_upload_storage,
+    scan_upload,
+    validate_upload_type,
+)
 from src.services.worker_queue import EnterpriseTaskRunner, get_worker_mode
-from src.tenancy import DEMO_TENANT_ID, TenantContext, require_permission
+from src.tenancy import DEMO_TENANT_ID, TenantContext, can_grant_role, require_permission
 
 
-settings = get_settings()
-SessionFactory = create_session_factory(settings)
-init_database(SessionFactory)
-if settings.demo_mode and not settings.is_production:
-    seed_demo_tenant(SessionFactory)
+logger = get_logger(__name__)
+
+
+class ApiRuntime:
+    def __init__(self) -> None:
+        self.settings: Settings = get_settings()
+        self.session_factory: sessionmaker[Session] | None = None
+        self.startup_error = ""
+        self.initialized = False
+
+
+runtime = ApiRuntime()
+
+
+def initialize_runtime(*, retry_failed: bool = False) -> None:
+    if runtime.initialized and (runtime.session_factory is not None or not retry_failed):
+        return
+    runtime.settings = get_settings()
+    try:
+        runtime.session_factory = create_session_factory(runtime.settings)
+        if not runtime.settings.is_production:
+            init_database(runtime.session_factory)
+        if runtime.settings.demo_mode and not runtime.settings.is_production:
+            seed_demo_tenant(runtime.session_factory)
+        runtime.startup_error = ""
+    except Exception as exc:
+        runtime.session_factory = None
+        runtime.startup_error = redact_secret_text(exc)
+        logger.error(
+            "api_startup_initialization_failed",
+            extra={"error": runtime.startup_error, "error_type": exc.__class__.__name__},
+        )
+    finally:
+        runtime.initialized = True
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    initialize_runtime()
+    yield
+
+
+settings_for_middleware = runtime.settings
 
 app = FastAPI(
     title="Supplier Intelligence Platform API",
     version="1.0.0",
     description="Tenant-scoped supplier risk intelligence API.",
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[item.strip() for item in settings.cors_allow_origins.split(",") if item.strip()] or ["*"],
+    allow_origins=settings_for_middleware.effective_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 app.add_middleware(
     RateLimitMiddleware,
-    enabled=settings.rate_limit_enabled,
-    limit=settings.rate_limit_requests,
-    window_seconds=settings.rate_limit_window_seconds,
+    enabled=settings_for_middleware.rate_limit_enabled,
+    limit=settings_for_middleware.rate_limit_requests,
+    window_seconds=settings_for_middleware.rate_limit_window_seconds,
 )
 
 
@@ -98,6 +146,7 @@ async def request_context_middleware(request: Request, call_next):
             content={"detail": exc.detail, "request_id": request_id},
         )
     except Exception:
+        logger.exception("unhandled_api_error", extra={"request_id": request_id, "path": request.url.path})
         response = JSONResponse(
             status_code=500,
             content={"detail": "Internal server error", "request_id": request_id},
@@ -111,7 +160,8 @@ async def request_context_middleware(request: Request, call_next):
 
 
 def get_db():
-    session = SessionFactory()
+    session_factory = get_session_factory()
+    session = session_factory()
     try:
         yield session
     finally:
@@ -119,10 +169,65 @@ def get_db():
 
 
 def get_active_settings() -> Settings:
-    return settings
+    return runtime.settings
 
 
-def get_tenant_context(request: Request, session: Session = Depends(get_db)) -> TenantContext:
+def get_session_factory() -> sessionmaker[Session]:
+    initialize_runtime(retry_failed=True)
+    if runtime.session_factory is None:
+        raise HTTPException(status_code=503, detail="Database is unavailable.")
+    return runtime.session_factory
+
+
+def _status_response(status: dict[str, Any], *, ready_check: bool = False) -> dict[str, Any] | JSONResponse:
+    is_ready = bool(status["database"].get("ok")) and bool(status["api"].get("ok")) and not status["production_issues"]
+    payload = {
+        "status": "ready" if is_ready else "degraded",
+        "database": status["database"],
+        "api": status["api"],
+        "production_issues": status["production_issues"],
+        "status_error": status["status_error"],
+    }
+    if ready_check and not is_ready:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+def _bearer_token(request: Request) -> str:
+    authorization = request.headers.get("Authorization", "").strip()
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return ""
+    return token.strip()
+
+
+def get_tenant_context(
+    request: Request,
+    session: Session = Depends(get_db),
+    active_settings: Settings = Depends(get_active_settings),
+) -> TenantContext:
+    if active_settings.auth_provider == "oidc":
+        token = _bearer_token(request)
+        if not token:
+            _safe_auth_failure_audit(session, "missing_oidc_bearer_token", request.state.request_id)
+            raise HTTPException(status_code=401, detail="Authorization Bearer token is required.")
+        try:
+            context = build_auth_provider(active_settings).verify_token(token).to_context(request.state.request_id)
+        except ValueError:
+            _safe_auth_failure_audit(session, "invalid_oidc_bearer_token", request.state.request_id)
+            raise HTTPException(status_code=403, detail="Invalid OIDC bearer token.") from None
+
+        tenants = TenantRepository(session)
+        if tenants.get_tenant(context.tenant_id) is None:
+            _safe_auth_failure_audit(session, "oidc_tenant_not_found", request.state.request_id)
+            raise HTTPException(status_code=403, detail="Invalid OIDC bearer token.")
+        membership = tenants.get_membership(context.tenant_id, context.username)
+        if membership is None:
+            _safe_auth_failure_audit(session, "oidc_membership_not_found", request.state.request_id)
+            raise HTTPException(status_code=403, detail="Invalid OIDC bearer token.")
+        context.role = membership.role
+        return context
+
     tenant_id = request.headers.get("X-Tenant-ID", "").strip()
     api_key = request.headers.get("X-API-Key", "").strip()
     if not tenant_id or not api_key:
@@ -134,6 +239,24 @@ def get_tenant_context(request: Request, session: Session = Depends(get_db)) -> 
         raise HTTPException(status_code=403, detail="Invalid tenant or API key.")
     context.request_id = request.state.request_id
     return context
+
+
+async def read_validated_upload(file: UploadFile, active_settings: Settings) -> tuple[str, bytes]:
+    try:
+        filename = validate_upload_type(file.filename or "", file.content_type or "", active_settings)
+    except UploadSafetyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    data = await file.read(active_settings.max_upload_bytes + 1)
+    if len(data) > active_settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload exceeds {active_settings.max_upload_bytes} byte limit.",
+        )
+    try:
+        scan_upload(data, active_settings)
+    except UploadSafetyError as exc:
+        raise HTTPException(status_code=503 if active_settings.is_production else 400, detail=str(exc)) from exc
+    return filename, data
 
 
 def _safe_auth_failure_audit(session: Session, reason: str, request_id: str) -> None:
@@ -163,14 +286,18 @@ def live():
 
 @app.get("/ready", tags=["health"])
 def ready(active_settings: Settings = Depends(get_active_settings)):
-    status = system_status(active_settings, SessionFactory, DEMO_TENANT_ID)
-    return {"status": "ready" if status["database"]["ok"] else "degraded", "database": status["database"]}
+    initialize_runtime(retry_failed=True)
+    active_settings = runtime.settings
+    status = system_status(active_settings, runtime.session_factory, DEMO_TENANT_ID, runtime.startup_error)
+    return _status_response(status, ready_check=True)
 
 
 @app.get("/health", tags=["health"])
 def health(active_settings: Settings = Depends(get_active_settings)):
-    status = system_status(active_settings, SessionFactory, DEMO_TENANT_ID)
-    return {"status": "ok" if status["database"]["ok"] else "degraded", "database": status["database"]}
+    initialize_runtime(retry_failed=True)
+    active_settings = runtime.settings
+    status = system_status(active_settings, runtime.session_factory, DEMO_TENANT_ID, runtime.startup_error)
+    return {"status": "ok" if status["database"]["ok"] and status["api"]["ok"] else "degraded", "database": status["database"], "api": status["api"]}
 
 
 @app.get("/worker/health", tags=["health"])
@@ -279,10 +406,28 @@ def acknowledge_alert(alert_id: int, session: Session = Depends(get_db), context
 async def ingestion_upload(
     file: UploadFile = File(...),
     session: Session = Depends(get_db),
+    active_settings: Settings = Depends(get_active_settings),
     context: TenantContext = Depends(require_context("ingestion.upload")),
 ):
-    data = await file.read()
-    result = IngestionService(session, context.tenant_id).process_upload(data, file.filename or "upload.csv", username=context.username)
+    filename, data = await read_validated_upload(file, active_settings)
+    try:
+        stored_upload = build_upload_storage(active_settings).save(context.tenant_id, filename, data, active_settings)
+    except UploadSafetyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        safe_error = redact_secret_text(exc)
+        logger.error(
+            "upload_storage_failed",
+            extra={"tenant_id": context.tenant_id, "provider": active_settings.upload_storage_provider, "error": safe_error},
+        )
+        raise HTTPException(status_code=503, detail="Upload storage is unavailable.") from exc
+    result = IngestionService(session, context.tenant_id).process_upload(
+        data,
+        filename,
+        username=context.username,
+        upload_storage_provider=stored_upload.provider,
+        upload_key=stored_upload.key,
+    )
     session.commit()
     return asdict(result)
 
@@ -315,7 +460,7 @@ def audit_logs(session: Session = Depends(get_db), context: TenantContext = Depe
 
 @app.get("/system/status", tags=["health"])
 def get_system_status(active_settings: Settings = Depends(get_active_settings), context: TenantContext = Depends(require_context("system.read"))):
-    return system_status(active_settings, SessionFactory, context.tenant_id)
+    return system_status(active_settings, get_session_factory(), context.tenant_id, runtime.startup_error)
 
 
 @app.get("/background/jobs", tags=["jobs"])
@@ -329,7 +474,7 @@ def run_background_job(
     active_settings: Settings = Depends(get_active_settings),
     context: TenantContext = Depends(require_context("jobs.run")),
 ):
-    return LocalJobScheduler(active_settings, SessionFactory).run_job_now(job_name, context.tenant_id).to_dict()
+    return LocalJobScheduler(active_settings, get_session_factory()).run_job_now(job_name, context.tenant_id).to_dict()
 
 
 @app.post("/worker/tasks/{task_name}/run", tags=["jobs"])
@@ -338,7 +483,7 @@ def run_worker_task(
     active_settings: Settings = Depends(get_active_settings),
     context: TenantContext = Depends(require_context("jobs.run")),
 ):
-    return EnterpriseTaskRunner(active_settings, SessionFactory).run_task(
+    return EnterpriseTaskRunner(active_settings, get_session_factory()).run_task(
         task_name,
         context.tenant_id,
         correlation_id=context.request_id,
@@ -383,6 +528,8 @@ def create_membership(
 ):
     if context.tenant_id != tenant_id and context.role != "platform_admin":
         raise HTTPException(status_code=403, detail="Cannot manage another tenant.")
+    if not can_grant_role(context, payload.role):
+        raise HTTPException(status_code=403, detail=f"Cannot grant role: {payload.role}.")
     row = TenantRepository(session).create_membership(tenant_id, payload.username, payload.role)
     session.commit()
     return TenantRepository.membership_to_dict(row)
@@ -397,6 +544,8 @@ def create_api_key(
 ):
     if context.tenant_id != tenant_id and context.role != "platform_admin":
         raise HTTPException(status_code=403, detail="Cannot manage another tenant.")
+    if not can_grant_role(context, payload.role):
+        raise HTTPException(status_code=403, detail=f"Cannot grant role: {payload.role}.")
     key = TenantRepository(session).create_api_key(tenant_id, payload.username, payload.role, payload.label)
     session.commit()
     return {"tenant_id": tenant_id, "username": payload.username, "role": payload.role, "api_key": key}
