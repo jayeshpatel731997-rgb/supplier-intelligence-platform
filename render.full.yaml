@@ -1,4 +1,4 @@
-# Phase 2 Render Blueprint: full staging stack after the Phase 1 API deploy is healthy.
+# Full Render Blueprint: API and UI are separate web services, with worker services added.
 # To use it, copy this file to render.yaml, commit to main, and apply the Blueprint update.
 services:
   - type: keyvalue
@@ -35,7 +35,7 @@ services:
           property: connectionString
 
   - type: web
-    name: supplier-intelligence-command-center
+    name: supplier-intelligence-ui
     runtime: docker
     plan: starter
     region: oregon

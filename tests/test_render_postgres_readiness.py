@@ -67,6 +67,19 @@ def test_render_blueprints_use_alembic_without_create_all_fallback():
         assert "healthCheckPath: /live" in text
 
 
+def test_render_blueprints_keep_api_and_ui_services_separate():
+    for blueprint in ("render.yaml", "render.full.yaml"):
+        text = (ROOT / blueprint).read_text(encoding="utf-8")
+
+        assert "name: supplier-intelligence-api" in text
+        assert "dockerfilePath: ./backend/Dockerfile" in text
+        assert "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}" in text
+        assert "name: supplier-intelligence-ui" in text
+        assert "dockerfilePath: ./Dockerfile" in text
+        assert "streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0" in text
+        assert "healthCheckPath: /_stcore/health" in text
+
+
 def test_smoke_script_redacts_secret_like_values():
     import scripts.smoke_staging as smoke
 
@@ -88,3 +101,41 @@ def test_smoke_script_builds_auth_headers_without_printing_values(monkeypatch):
     headers = smoke.auth_headers(os.environ)
 
     assert headers == {"X-Tenant-ID": "tenant-a", "X-API-Key": "api-key-value"}
+
+
+def test_smoke_script_rejects_streamlit_html_fallback(monkeypatch):
+    import scripts.smoke_staging as smoke
+
+    def fake_request(_base_url, path, headers=None, timeout=10):
+        if path == "/suppliers":
+            return smoke.SmokeResponse(
+                status=200,
+                body="<html><title>Supplier Intelligence Platform</title></html>",
+                content_type="text/html; charset=utf-8",
+            )
+        return smoke.SmokeResponse(
+            status=200,
+            body='{"status":"ok","database":{"ok":true},"api":{"ok":true},"production_issues":[]}',
+            content_type="application/json",
+        )
+
+    monkeypatch.setattr(smoke, "request_json", fake_request)
+
+    assert smoke.run_smoke("https://staging.example.com/", {}) == 1
+
+
+def test_smoke_script_rejects_non_json_health_response(monkeypatch):
+    import scripts.smoke_staging as smoke
+
+    def fake_request(_base_url, path, headers=None, timeout=10):
+        if path == "/health":
+            return smoke.SmokeResponse(
+                status=200,
+                body="<html><title>Streamlit</title></html>",
+                content_type="text/html",
+            )
+        return smoke.SmokeResponse(status=200, body='{"status":"alive"}', content_type="application/json")
+
+    monkeypatch.setattr(smoke, "request_json", fake_request)
+
+    assert smoke.run_smoke("https://staging.example.com/", {}) == 1

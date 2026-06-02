@@ -62,22 +62,33 @@ OIDC/JWKS/SAML configuration, or local auth without an explicit production overr
 
 ## Render Staging
 
-The repo includes a phased GitHub-backed Render Blueprint.
+The repo includes GitHub-backed Render Blueprints with separate API and UI
+services.
 
-Phase 1 uses `render.yaml` and creates:
+`render.yaml` creates:
 
-- FastAPI backend
+- `supplier-intelligence-api`: FastAPI using `backend/Dockerfile`
+- `supplier-intelligence-ui`: Streamlit using the root `Dockerfile`
 - Render Postgres
 
-This is the safest first deployment because it validates Docker, Alembic
-migrations, Render Postgres, and health endpoints before adding paid
-worker/cron services. The Blueprint uses `/live` for Render's process health
-check; use `/ready` and `scripts/smoke_staging.py` to verify that required
-staging configuration is complete.
+The API service start command is:
 
-Phase 2 uses `render.full.yaml` after Phase 1 is healthy and adds:
+```bash
+python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}
+```
 
-- Streamlit command center
+The UI service start command is:
+
+```bash
+streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0
+```
+
+The API Blueprint uses `/live` for Render's process health check; use `/ready`
+and `scripts/smoke_staging.py` against the API service URL to verify that
+required staging configuration is complete.
+
+`render.full.yaml` keeps the same API/UI split and adds:
+
 - Render Key Value for Redis-compatible Celery broker
 - Celery worker
 - Cron jobs that enqueue Sentinel/risk/exposure tasks
@@ -130,6 +141,10 @@ set STAGING_BASE_URL=https://supplier-intelligence-api.onrender.com
 python scripts/smoke_staging.py
 ```
 
+`STAGING_BASE_URL` must be the `supplier-intelligence-api` URL. If it points to
+`supplier-intelligence-ui`, Streamlit can serve `200 text/html` for API-like
+paths; the smoke test treats that as a failed deployment target.
+
 For an authenticated read check, add either:
 
 ```bash
@@ -144,7 +159,8 @@ set STAGING_API_KEY=<tenant-api-key>
 ```
 
 The smoke test checks `/live`, `/health`, `/ready`, verifies `/suppliers`
-rejects missing auth, and optionally checks authenticated `/suppliers`. It
+rejects missing auth, verifies health endpoints return API JSON instead of
+Streamlit HTML fallback, and optionally checks authenticated `/suppliers`. It
 redacts secret-like values in output.
 
 ## Postgres Configuration
@@ -277,7 +293,7 @@ docker compose --profile celery up --build celery-worker
 ## Rollback Notes
 
 - Render service rollback: use Render's previous deploy rollback for the API,
-  worker, or Streamlit service.
+  worker, or `supplier-intelligence-ui` service.
 - Database rollback: restore from a verified Render Postgres backup/snapshot
   before downgrading schema. The initial Alembic downgrade drops managed tables
   and is not safe for customer data.

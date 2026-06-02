@@ -119,6 +119,28 @@ def test_protected_routes_require_tenant_and_api_key(monkeypatch, tmp_path):
     assert client.get("/suppliers", headers=_headers(tenant_id="missing-tenant")).status_code == 403
 
 
+def test_staging_production_suppliers_rejects_missing_auth(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUPPLIER_SECURITY_MODE", "production")
+    monkeypatch.setenv("SUPPLIER_DEPLOYMENT_MODE", "render-staging")
+    monkeypatch.setenv("SUPPLIER_DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}")
+    monkeypatch.setenv("SUPPLIER_DEMO_MODE", "false")
+    monkeypatch.setenv("AUTH_PROVIDER", "oidc")
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", "https://staging.example.com")
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
+
+    import src.config as config
+    import backend.main as backend_main
+
+    config.get_settings.cache_clear()
+    reloaded = importlib.reload(backend_main)
+
+    with TestClient(reloaded.app) as client:
+        response = client.get("/suppliers")
+
+    assert response.status_code == 401
+    assert "Bearer token" in response.json()["detail"]
+
+
 def test_supplier_risk_sentinel_alert_and_acknowledge_flow(monkeypatch, tmp_path):
     monkeypatch.setenv("SUPPLIER_UPLOAD_STORAGE_PATH", str(tmp_path / "uploads"))
     client = _client(monkeypatch, tmp_path)

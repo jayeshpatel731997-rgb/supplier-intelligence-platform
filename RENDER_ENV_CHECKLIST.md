@@ -12,11 +12,16 @@ Render injects these from the managed Postgres service:
 - `DATABASE_URL`
 
 `render.full.yaml` also injects `REDIS_URL` from Render Key Value for the API,
-worker, Streamlit service, and cron jobs.
+worker, `supplier-intelligence-ui`, and cron jobs.
 
 ## Blueprint Defaults
 
-`render.yaml` and `render.full.yaml` set these non-secret values:
+`render.yaml` and `render.full.yaml` create separate web services:
+
+- `supplier-intelligence-api`: `python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}`
+- `supplier-intelligence-ui`: `streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0`
+
+They set these non-secret values:
 
 - `SUPPLIER_SECURITY_MODE=production`
 - `SUPPLIER_DEPLOYMENT_MODE=render-staging-phase1` or `render-staging-full`
@@ -37,7 +42,7 @@ worker, Streamlit service, and cron jobs.
 - `RETENTION_ENABLED=false`
 - `SECRETS_PROVIDER=env`
 - `KMS_PROVIDER=local`
-- `WORKER_MODE=local` in Phase 1, `celery` for full-stack worker/cron services
+- `WORKER_MODE=local` in `render.yaml`, `celery` for full-stack worker/cron services
 - `SUPPLIER_SCHEDULER_ENABLED=false`
 
 Render also generates:
@@ -92,6 +97,10 @@ Run after the Render deploy:
 $env:STAGING_BASE_URL="https://supplier-intelligence-api.onrender.com"
 python scripts/smoke_staging.py
 ```
+
+Use the `supplier-intelligence-api` URL. The smoke script fails clearly if the
+base URL points at Streamlit and returns HTML fallback instead of FastAPI JSON or
+an API auth rejection.
 
 For an authenticated read check, add either:
 

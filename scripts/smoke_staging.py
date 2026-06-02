@@ -27,6 +27,7 @@ SECRET_PATTERNS = [
 class SmokeResponse:
     status: int
     body: str
+    content_type: str = ""
 
 
 def redact(value: object) -> str:
@@ -61,41 +62,96 @@ def request_json(base_url: str, path: str, headers: Mapping[str, str] | None = N
     request = Request(url, headers=dict(headers or {}), method="GET")
     try:
         with urlopen(request, timeout=timeout) as response:
-            return SmokeResponse(status=response.status, body=response.read().decode("utf-8", errors="replace"))
+            return SmokeResponse(
+                status=response.status,
+                body=response.read().decode("utf-8", errors="replace"),
+                content_type=response.headers.get("Content-Type", ""),
+            )
     except HTTPError as exc:
-        return SmokeResponse(status=exc.code, body=exc.read().decode("utf-8", errors="replace"))
+        return SmokeResponse(
+            status=exc.code,
+            body=exc.read().decode("utf-8", errors="replace"),
+            content_type=exc.headers.get("Content-Type", ""),
+        )
     except URLError as exc:
         raise RuntimeError(f"Request failed for {path}: {redact(exc)}") from exc
 
 
-def _json_summary(body: str) -> str:
+def _json_payload(response: SmokeResponse) -> object | None:
     try:
-        payload = json.loads(body)
+        return json.loads(response.body)
     except json.JSONDecodeError:
+        return None
+
+
+def _looks_like_html(response: SmokeResponse) -> bool:
+    content_type = response.content_type.lower()
+    body_start = response.body.lstrip()[:64].lower()
+    return "text/html" in content_type or body_start.startswith(("<!doctype html", "<html"))
+
+
+def _json_summary(response: SmokeResponse) -> str:
+    payload = _json_payload(response)
+    if payload is None:
         return ""
     if isinstance(payload, dict):
         return redact({key: payload.get(key) for key in ("status", "database", "api", "production_issues") if key in payload})
     return ""
 
 
+def _api_json_check(name: str, response: SmokeResponse, expected_status: int = 200) -> tuple[str, bool, str]:
+    if response.status != expected_status:
+        return (name, False, f"HTTP {response.status} {_json_summary(response)}".strip())
+    if _looks_like_html(response):
+        return (
+            name,
+            False,
+            f"HTTP {response.status} {response.content_type}; got HTML, likely Streamlit/UI URL instead of FastAPI API URL",
+        )
+    payload = _json_payload(response)
+    if payload is None:
+        return (
+            name,
+            False,
+            f"HTTP {response.status} {response.content_type}; expected FastAPI JSON response",
+        )
+    return (name, True, f"HTTP {response.status} {_json_summary(response)}".strip())
+
+
+def _protected_route_check(response: SmokeResponse) -> tuple[str, bool, str]:
+    if response.status in {401, 403}:
+        return ("/suppliers without auth", True, f"HTTP {response.status} {_json_summary(response)}".strip())
+    if _looks_like_html(response):
+        return (
+            "/suppliers without auth",
+            False,
+            f"HTTP {response.status} {response.content_type}; got HTML, likely Streamlit/UI URL instead of FastAPI API URL",
+        )
+    return (
+        "/suppliers without auth",
+        False,
+        f"HTTP {response.status} {response.content_type}; expected 401/403 auth rejection",
+    )
+
+
 def run_smoke(base_url: str, headers: Mapping[str, str]) -> int:
     checks: list[tuple[str, bool, str]] = []
 
     live = request_json(base_url, "/live")
-    checks.append(("/live", live.status == 200, f"HTTP {live.status}"))
+    checks.append(_api_json_check("/live", live))
 
     health = request_json(base_url, "/health")
-    checks.append(("/health", health.status == 200, f"HTTP {health.status} {_json_summary(health.body)}".strip()))
+    checks.append(_api_json_check("/health", health))
 
     ready = request_json(base_url, "/ready")
-    checks.append(("/ready", ready.status == 200, f"HTTP {ready.status} {_json_summary(ready.body)}".strip()))
+    checks.append(_api_json_check("/ready", ready))
 
     protected = request_json(base_url, "/suppliers")
-    checks.append(("/suppliers without auth", protected.status in {401, 403}, f"HTTP {protected.status}"))
+    checks.append(_protected_route_check(protected))
 
     if headers:
         suppliers = request_json(base_url, "/suppliers", headers=headers)
-        checks.append(("/suppliers with auth", suppliers.status == 200, f"HTTP {suppliers.status}"))
+        checks.append(_api_json_check("/suppliers with auth", suppliers))
     else:
         checks.append(("optional authenticated /suppliers", True, "skipped; set STAGING_BEARER_TOKEN or STAGING_TENANT_ID + STAGING_API_KEY"))
 

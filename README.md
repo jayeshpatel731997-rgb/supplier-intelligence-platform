@@ -136,6 +136,9 @@ docker compose up --build
 ```
 
 Streamlit opens at **http://localhost:8501** and FastAPI at **http://localhost:8000**.
+The compose stack keeps them separate: `streamlit` builds the root `Dockerfile`
+and runs `streamlit run app.py`; `backend` builds `backend/Dockerfile` and runs
+`uvicorn backend.main:app`.
 
 Render staging:
 
@@ -150,13 +153,15 @@ Then open:
 https://dashboard.render.com/blueprint/new?repo=https://github.com/jayeshpatel731997-rgb/supplier-intelligence-platform
 ```
 
-The default `render.yaml` is a Phase 1 API + Postgres Blueprint. It proves the
-base SaaS backend before adding Streamlit, Redis, Celery, and cron from
-`render.full.yaml`. See `RENDER_STAGING_RUNBOOK.md` for the exact staging launch
-checklist. Real Render staging runs with `SUPPLIER_SECURITY_MODE=production`,
+The default `render.yaml` creates separate Render web services:
+`supplier-intelligence-api` runs FastAPI with `uvicorn backend.main:app`, and
+`supplier-intelligence-ui` runs Streamlit with `streamlit run app.py`.
+`render.full.yaml` keeps the same API/UI split and adds Redis, worker, and cron
+services. See `RENDER_STAGING_RUNBOOK.md` for the exact staging launch checklist.
+Real Render staging runs with `SUPPLIER_SECURITY_MODE=production`,
 `SUPPLIER_DEMO_MODE=false`, Alembic migrations, explicit CORS, complete auth
-provider settings, and S3-compatible upload storage. `/live` is the Render
-process health check; `/ready` is the configuration and database traffic gate.
+provider settings, and S3-compatible upload storage. `/live` is the API Render
+process health check; `/ready` is the API configuration and database traffic gate.
 
 Smoke test staging after deploy:
 
@@ -164,6 +169,10 @@ Smoke test staging after deploy:
 set STAGING_BASE_URL=https://supplier-intelligence-api.onrender.com
 python scripts/smoke_staging.py
 ```
+
+Use the FastAPI service URL for `STAGING_BASE_URL`. If this accidentally points
+at the Streamlit UI service, the smoke script fails when it sees HTML fallback
+instead of API JSON/auth responses.
 
 ## Real-Time Sentinel Setup
 
@@ -249,6 +258,7 @@ docker run --env-file .env -p 8501:8501 -v %cd%/data:/app/data supplier-intellig
 ```
 
 On Linux/macOS, replace `%cd%/data` with `$(pwd)/data`.
+For the API container, build `backend/Dockerfile` and publish port `8000`.
 
 ## Verification
 

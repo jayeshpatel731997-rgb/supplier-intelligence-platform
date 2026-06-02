@@ -1,6 +1,5 @@
-# Phase 1 Render Blueprint: prove the API and Postgres deployment first.
-# After this is healthy, promote render.full.yaml to render.yaml for Streamlit,
-# Redis, Celery, and cron services.
+# Render staging Blueprint: API and UI are separate web services.
+# Smoke tests must target supplier-intelligence-api, not the Streamlit UI URL.
 services:
   - type: web
     name: supplier-intelligence-api
@@ -12,6 +11,27 @@ services:
     dockerContext: .
     dockerCommand: /bin/sh -c "python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"
     healthCheckPath: /live
+    envVars:
+      - fromGroup: supplier-intelligence-staging
+      - key: SUPPLIER_DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: supplier-intelligence-postgres
+          property: connectionString
+
+  - type: web
+    name: supplier-intelligence-ui
+    runtime: docker
+    plan: free
+    region: oregon
+    autoDeploy: true
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: /bin/sh -c "streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0"
+    healthCheckPath: /_stcore/health
     envVars:
       - fromGroup: supplier-intelligence-staging
       - key: SUPPLIER_DATABASE_URL

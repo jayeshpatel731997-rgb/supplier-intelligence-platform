@@ -23,8 +23,9 @@ The project now has a real production foundation beside the existing Streamlit a
 - HTTP 503 readiness responses when startup, database, or required production runtime checks fail
 - Production startup relies on Alembic instead of automatic table creation
 - `scripts/migrate.py` validates staging/production database URL requirements before running Alembic
-- Render blueprints start the API/worker with Alembic migrations and use `/live` for process health
-- Staging smoke script checks `/live`, `/health`, `/ready`, protected-route auth failure, and optional authenticated supplier read
+- Render blueprints keep `supplier-intelligence-api` and `supplier-intelligence-ui` as separate web services
+- API blueprints start FastAPI with Alembic migrations and `uvicorn backend.main:app`; UI blueprints start Streamlit with `streamlit run app.py`
+- Staging smoke script checks `/live`, `/health`, `/ready`, protected-route auth failure, optional authenticated supplier read, and Streamlit/HTML fallback misrouting
 - Readiness flags wildcard CORS and incomplete OIDC/JWKS/SAML configuration in staging/production mode
 - Health/status errors redact database URL credentials and secret-like values
 - Bounded FastAPI uploads with configurable file size, extension, and MIME allow-lists
