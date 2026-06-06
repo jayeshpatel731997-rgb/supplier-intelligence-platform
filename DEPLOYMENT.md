@@ -138,12 +138,17 @@ After Render deploys, run the smoke test locally:
 
 ```bash
 set STAGING_BASE_URL=https://supplier-intelligence-api.onrender.com
+set STAGING_TENANT_ID=demo-tenant
+set STAGING_API_KEY=<tenant-api-key>
 python scripts/smoke_staging.py
 ```
 
 `STAGING_BASE_URL` must be the `supplier-intelligence-api` URL. If it points to
 `supplier-intelligence-ui`, Streamlit can serve `200 text/html` for API-like
 paths; the smoke test treats that as a failed deployment target.
+The default smoke requires staging credentials and fails when they are absent.
+Use `python scripts/smoke_staging.py --health-only` only when intentionally
+checking public health endpoints and auth rejection without the evidence workflow.
 
 For an authenticated read check, add either:
 
@@ -158,10 +163,63 @@ set STAGING_TENANT_ID=<tenant-id>
 set STAGING_API_KEY=<tenant-api-key>
 ```
 
+Seed deterministic demo data before workflow smoke checks:
+
+```bash
+python scripts/migrate.py
+set SUPPLIER_DEMO_API_KEY=<non-default-staging-secret>
+python scripts/seed_demo_data.py --tenant-id demo-tenant
+```
+
+Staging/production deployment modes reject the public `demo-api-key` default.
+The seed command does not create staging schema; Alembic migrations must succeed
+first.
+The staging seed creates a `risk_manager` credential rather than a platform
+administrator credential. Use the same explicit value as `STAGING_API_KEY`
+when running the local smoke client against that seeded tenant.
+
 The smoke test checks `/live`, `/health`, `/ready`, verifies `/suppliers`
 rejects missing auth, verifies health endpoints return API JSON instead of
-Streamlit HTML fallback, and optionally checks authenticated `/suppliers`. It
-redacts secret-like values in output.
+Streamlit HTML fallback, and, when auth is configured, checks authenticated
+`/suppliers`, connector sync, evidence-chain run, evidence action update, and
+scoring config read. In public connector mode, a `skipped` sync is accepted
+when an optional source or supplier identifier is not configured. A `failed`
+sync fails the smoke test so staging cannot silently ignore connector outages.
+The client redacts secret-like values in output.
+
+For separately deployed Streamlit, set:
+
+```bash
+SUPPLIER_API_BASE_URL=https://supplier-intelligence-api.onrender.com
+```
+
+The Streamlit command center uses this value for API reachability checks and
+shows a friendly error if the API is unreachable.
+
+Connector modes for staging:
+
+```bash
+SUPPLIER_CONNECTOR_MODE=demo
+# or, for optional public data tests:
+SUPPLIER_CONNECTOR_MODE=public
+SUPPLIER_CONNECTOR_TIMEOUT_SECONDS=10
+SUPPLIER_CONNECTOR_RETRY_COUNT=1
+SUPPLIER_NEWS_RSS_URLS=https://example.com/feed.xml
+SUPPLIER_NEWS_REQUIRE_SUPPLIER_MATCH=true
+SUPPLIER_FILINGS_COMPANY_IDENTIFIER=<cik>
+SUPPLIER_FILINGS_USER_AGENT=Supplier Intelligence Platform ops@example.com
+# Optional override; when blank, the connector uses SEC submissions for the CIK.
+SUPPLIER_FILINGS_SOURCE_URLS=
+SUPPLIER_HIRING_SOURCE_URLS=https://example.com/jobs.rss
+```
+
+If public connector configuration is missing or a source fails, the connector
+sync records `skipped` or `failed` and the evidence-chain workflow remains
+available. Demo/stub mode remains deterministic and offline. Public news and
+hiring inputs must be RSS/Atom-compatible; SEC filings are read from the public
+EDGAR submissions JSON endpoint and mapped to financial weak signals.
+Routine forms such as 10-K, 10-Q, and Form 4 are not treated as adverse risk
+signals; the connector currently maps material 8-K/6-K and late-filing notices.
 
 ## Postgres Configuration
 

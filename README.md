@@ -98,7 +98,7 @@ Health endpoints:
 
 - `/live` returns a lightweight process liveness response and does not require database initialization.
 - `/health` includes database and API state and reports `degraded` instead of crashing when database-backed status queries fail.
-- `/ready` is the traffic gate: it returns HTTP `200` only when startup initialization, database checks, and production runtime checks pass; otherwise it returns HTTP `503` with `status: degraded`.
+- `/ready` is the traffic gate: it returns HTTP `200` only when startup initialization, database checks, and production runtime checks pass; otherwise it returns HTTP `503` with `status: degraded`. It also reports database/backend mode, auth posture, connector mode, scoring config status, Convex configured/not-configured status, and governed narrative mode without exposing secret values.
 - In production mode, readiness also blocks wildcard CORS, incomplete OIDC/JWKS/SAML configuration, missing schema/migrations, and other unsafe runtime defaults. API and worker startup do not auto-create production schema; run Alembic first.
 - `/system/status` is protected and adds worker, Sentinel, auth, rate limit, retention, SIEM, and production configuration checks.
 
@@ -140,6 +140,19 @@ The compose stack keeps them separate: `streamlit` builds the root `Dockerfile`
 and runs `streamlit run app.py`; `backend` builds `backend/Dockerfile` and runs
 `uvicorn backend.main:app`.
 
+Seed deterministic local or staging demo data:
+
+```bash
+python scripts/seed_demo_data.py --tenant-id demo-tenant
+```
+
+The seed is idempotent and creates demo suppliers, weak signals, connector sync
+metadata, scoring config, an evidence-chain run, actions, and historical
+outcome examples without requiring external APIs. In staging/production
+deployment modes, set `SUPPLIER_DEMO_API_KEY` to an explicit non-default secret
+before running the seed; the generated staging membership is limited to the
+`risk_manager` role.
+
 Render staging:
 
 ```bash
@@ -167,12 +180,37 @@ Smoke test staging after deploy:
 
 ```bash
 set STAGING_BASE_URL=https://supplier-intelligence-api.onrender.com
+set STAGING_TENANT_ID=demo-tenant
+set STAGING_API_KEY=<tenant-api-key>
 python scripts/smoke_staging.py
 ```
 
 Use the FastAPI service URL for `STAGING_BASE_URL`. If this accidentally points
 at the Streamlit UI service, the smoke script fails when it sees HTML fallback
-instead of API JSON/auth responses.
+instead of API JSON/auth responses. With auth configured, the smoke script also
+runs connector sync, evidence-chain run, action update, and scoring-config read
+checks. Credentials are required by default so workflow checks cannot be
+silently skipped; use `--health-only` only for an explicit unauthenticated
+infrastructure check.
+
+Streamlit can target a separate local or staging API service with:
+
+```bash
+SUPPLIER_API_BASE_URL=https://supplier-intelligence-api.onrender.com
+```
+
+If the configured API is unreachable, the command center shows a clear operator
+message instead of assuming localhost.
+
+Connector and narrative modes:
+
+- `SUPPLIER_CONNECTOR_MODE=demo` or `stub`: deterministic offline signals.
+- `SUPPLIER_CONNECTOR_MODE=public`: optional RSS news/hiring sources and SEC EDGAR submissions; failures are recorded as degraded sync status and do not break scoring.
+- Public news entries must mention the configured supplier name or ID by default (`SUPPLIER_NEWS_REQUIRE_SUPPLIER_MATCH=true`) so general feeds are not attributed blindly.
+- SEC mapping is conservative: material 8-K/6-K and late-filing notices become weak signals, while routine periodic/ownership forms are skipped rather than accumulated as risk.
+- Public requests use `SUPPLIER_CONNECTOR_TIMEOUT_SECONDS` and `SUPPLIER_CONNECTOR_RETRY_COUNT`. Set `SUPPLIER_FILINGS_USER_AGENT` to an application name and monitored contact before using SEC EDGAR.
+- `SUPPLIER_LLM_NARRATIVE_PROVIDER=none`: deterministic governed narrative, the default.
+- `SUPPLIER_LLM_NARRATIVE_PROVIDER=openai|anthropic`: provider interface and governance boundary are present, but `/ready` reports `interface_only`; real provider calls remain intentionally disabled, tests use a mock, and runtime falls back deterministically.
 
 ## Real-Time Sentinel Setup
 
@@ -210,6 +248,7 @@ Render/Postgres staging:
 ```bash
 python scripts/migrate.py
 python scripts/validate_tenant_schema.py
+python scripts/seed_demo_data.py --tenant-id demo-tenant
 python scripts/smoke_staging.py --base-url https://supplier-intelligence-api.onrender.com
 ```
 

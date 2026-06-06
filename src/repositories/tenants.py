@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from src.models import AccessReview, BackupRun, Membership, Organization, RetentionPolicy, Tenant, TenantApiKey
@@ -127,21 +127,48 @@ class TenantRepository:
         self.session.flush()
         return row
 
-    def ensure_demo_seed(self) -> TenantSeedResult:
+    def ensure_demo_seed(
+        self,
+        *,
+        raw_key: str | None = None,
+        username: str | None = None,
+        role: str = "platform_admin",
+        revoke_usernames: tuple[str, ...] = (),
+    ) -> TenantSeedResult:
+        seed_key = raw_key or DEMO_API_KEY
+        seed_username = username or DEMO_PLATFORM_ADMIN
         self.create_tenant(DEMO_TENANT_ID, "Demo Tenant")
         if not self.list_memberships(DEMO_TENANT_ID):
             self.create_organization(DEMO_TENANT_ID, "Demo Organization", "demo.local")
-            self.create_api_key(
-                DEMO_TENANT_ID,
-                username=DEMO_PLATFORM_ADMIN,
-                role="platform_admin",
-                label="Demo platform admin key",
-                raw_key=DEMO_API_KEY,
-            )
             self.create_retention_policy(DEMO_TENANT_ID, "audit_logs", 2555)
             self.create_retention_policy(DEMO_TENANT_ID, "news_events", 90)
             self.create_backup_run(DEMO_TENANT_ID, status="configured", location="local-demo")
-        return TenantSeedResult(tenant_id=DEMO_TENANT_ID, api_key=DEMO_API_KEY)
+        if revoke_usernames:
+            self.session.execute(
+                update(TenantApiKey)
+                .where(
+                    TenantApiKey.tenant_id == DEMO_TENANT_ID,
+                    TenantApiKey.username.in_(revoke_usernames),
+                )
+                .values(is_active=False)
+            )
+        if self.validate_api_key(DEMO_TENANT_ID, seed_key) is None:
+            self.session.execute(
+                update(TenantApiKey)
+                .where(
+                    TenantApiKey.tenant_id == DEMO_TENANT_ID,
+                    TenantApiKey.username == seed_username,
+                )
+                .values(is_active=False)
+            )
+            self.create_api_key(
+                DEMO_TENANT_ID,
+                username=seed_username,
+                role=role,
+                label="Demo seed API key",
+                raw_key=seed_key,
+            )
+        return TenantSeedResult(tenant_id=DEMO_TENANT_ID, api_key=seed_key)
 
     @staticmethod
     def tenant_to_dict(row: Tenant) -> dict:

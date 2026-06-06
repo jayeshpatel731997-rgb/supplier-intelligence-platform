@@ -51,6 +51,7 @@ class Settings:
     app_name: str = "Supplier Intelligence Platform"
     security_mode: str = "local"
     deployment_mode: str = "demo"
+    data_backend: str = "sqlalchemy"
     database_url: str = "sqlite:///data/production_app.db"
     demo_mode: bool = True
     newsapi_key: str = ""
@@ -109,6 +110,23 @@ class Settings:
     scheduler_enabled: bool = True
     sentinel_interval_minutes: int = 60
     risk_interval_minutes: int = 120
+    connector_mode: str = "demo"
+    connector_timeout_seconds: int = 10
+    connector_retry_count: int = 1
+    news_rss_urls: str = ""
+    news_require_supplier_match: bool = True
+    filings_company_identifier: str = ""
+    filings_source_urls: str = ""
+    filings_user_agent: str = "Supplier Intelligence Platform staging@example.invalid"
+    hiring_source_urls: str = ""
+    public_connector_supplier_id: str = "public-supplier"
+    public_connector_supplier_name: str = "Public Source Supplier"
+    convex_url: str = ""
+    convex_deploy_key: str = ""
+    llm_narrative_provider: str = "none"
+    streamlit_api_base_url: str = "http://localhost:8000"
+    demo_scenario_path: str = "data/demo_supplier_scenarios.json"
+    calibration_outcomes_path: str = "data/demo_historical_outcomes.json"
 
     @property
     def is_production(self) -> bool:
@@ -122,6 +140,14 @@ class Settings:
     @property
     def database_driver(self) -> str:
         return self.database_url.split(":", 1)[0]
+
+    @property
+    def convex_configured(self) -> bool:
+        return bool(self.convex_url and self.convex_deploy_key)
+
+    @property
+    def active_data_backend(self) -> str:
+        return "sqlalchemy"
 
     @property
     def cors_origins(self) -> list[str]:
@@ -144,6 +170,22 @@ class Settings:
 
     def validate_runtime(self) -> list[str]:
         issues: list[str] = []
+        if self.data_backend not in {"sqlalchemy", "auto", "convex"}:
+            issues.append("SUPPLIER_DATA_BACKEND must be sqlalchemy, auto, or convex.")
+        if self.connector_mode not in {"stub", "demo", "public"}:
+            issues.append("SUPPLIER_CONNECTOR_MODE must be stub, demo, or public.")
+        if self.connector_timeout_seconds <= 0:
+            issues.append("SUPPLIER_CONNECTOR_TIMEOUT_SECONDS must be greater than zero.")
+        if self.connector_retry_count < 0:
+            issues.append("SUPPLIER_CONNECTOR_RETRY_COUNT must be zero or greater.")
+        if self.llm_narrative_provider not in {"none", "openai", "anthropic"}:
+            issues.append("SUPPLIER_LLM_NARRATIVE_PROVIDER must be none, openai, or anthropic.")
+        if bool(self.convex_url) != bool(self.convex_deploy_key):
+            issues.append("CONVEX_URL and CONVEX_DEPLOY_KEY must be configured together.")
+        if self.data_backend == "convex":
+            issues.append(
+                "Convex data backend is not active in this build; use SUPPLIER_DATA_BACKEND=sqlalchemy."
+            )
         if self.is_staging_or_production:
             if self.database_driver == "sqlite":
                 issues.append("Staging/production mode should use Postgres or another managed database.")
@@ -195,6 +237,7 @@ def get_settings() -> Settings:
     return Settings(
         security_mode=_secret_or_env("SUPPLIER_SECURITY_MODE", _secret_or_env("SECURITY_MODE", "local")).lower(),
         deployment_mode=_secret_or_env("SUPPLIER_DEPLOYMENT_MODE", "demo").lower(),
+        data_backend=_secret_or_env("SUPPLIER_DATA_BACKEND", "sqlalchemy").lower(),
         database_url=_normalize_database_url(
             _secret_or_env("SUPPLIER_DATABASE_URL", _secret_or_env("DATABASE_URL", "sqlite:///data/production_app.db"))
         ),
@@ -256,4 +299,24 @@ def get_settings() -> Settings:
         scheduler_enabled=_bool_env("SUPPLIER_SCHEDULER_ENABLED", True),
         sentinel_interval_minutes=_int_env("SUPPLIER_SENTINEL_INTERVAL_MINUTES", 60),
         risk_interval_minutes=_int_env("SUPPLIER_RISK_INTERVAL_MINUTES", 120),
+        connector_mode=_secret_or_env("SUPPLIER_CONNECTOR_MODE", "demo").lower(),
+        connector_timeout_seconds=_int_env("SUPPLIER_CONNECTOR_TIMEOUT_SECONDS", 10),
+        connector_retry_count=_int_env("SUPPLIER_CONNECTOR_RETRY_COUNT", 1),
+        news_rss_urls=_secret_or_env("SUPPLIER_NEWS_RSS_URLS", ""),
+        news_require_supplier_match=_bool_env("SUPPLIER_NEWS_REQUIRE_SUPPLIER_MATCH", True),
+        filings_company_identifier=_secret_or_env("SUPPLIER_FILINGS_COMPANY_IDENTIFIER", ""),
+        filings_source_urls=_secret_or_env("SUPPLIER_FILINGS_SOURCE_URLS", ""),
+        filings_user_agent=_secret_or_env(
+            "SUPPLIER_FILINGS_USER_AGENT",
+            "Supplier Intelligence Platform staging@example.invalid",
+        ),
+        hiring_source_urls=_secret_or_env("SUPPLIER_HIRING_SOURCE_URLS", ""),
+        public_connector_supplier_id=_secret_or_env("SUPPLIER_PUBLIC_CONNECTOR_SUPPLIER_ID", "public-supplier"),
+        public_connector_supplier_name=_secret_or_env("SUPPLIER_PUBLIC_CONNECTOR_SUPPLIER_NAME", "Public Source Supplier"),
+        convex_url=_secret_or_env("CONVEX_URL", _secret_or_env("SUPPLIER_CONVEX_URL", "")),
+        convex_deploy_key=_secret_or_env("CONVEX_DEPLOY_KEY", _secret_or_env("SUPPLIER_CONVEX_DEPLOY_KEY", "")),
+        llm_narrative_provider=_secret_or_env("SUPPLIER_LLM_NARRATIVE_PROVIDER", "none").lower(),
+        streamlit_api_base_url=_secret_or_env("SUPPLIER_API_BASE_URL", "http://localhost:8000"),
+        demo_scenario_path=_secret_or_env("SUPPLIER_DEMO_SCENARIO_PATH", "data/demo_supplier_scenarios.json"),
+        calibration_outcomes_path=_secret_or_env("SUPPLIER_CALIBRATION_OUTCOMES_PATH", "data/demo_historical_outcomes.json"),
     )

@@ -1,0 +1,18 @@
+[
+  {
+    "supplier_id": "demo-finance-1",
+    "event_type": "late_delivery",
+    "event_date": "2026-05-01T00:00:00+00:00",
+    "severity": 0.8,
+    "notes": "Escalated delivery miss after financial distress signal.",
+    "source": "demo"
+  },
+  {
+    "supplier_id": "demo-compliance-1",
+    "event_type": "audit_finding",
+    "event_date": "2026-05-10T00:00:00+00:00",
+    "severity": 0.6,
+    "notes": "Corrective action requested by quality team.",
+    "source": "demo"
+  }
+]

@@ -201,6 +201,135 @@ class SupplierEventMatch(Base, TimestampMixin):
     match_reason: Mapped[str] = mapped_column(String(255), default="", nullable=False)
 
 
+class SupplierWeakSignal(Base, TimestampMixin):
+    __tablename__ = "supplier_weak_signals"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "signal_id", name="uq_supplier_weak_signal"),
+        Index("ix_supplier_weak_signals_tenant_supplier", "tenant_id", "supplier_id"),
+        Index("ix_supplier_weak_signals_tenant_type", "tenant_id", "signal_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), ForeignKey("tenants.tenant_id"), default="demo-tenant", nullable=False, index=True)
+    signal_id: Mapped[str] = mapped_column(String(150), nullable=False, index=True)
+    supplier_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    supplier_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    signal_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    driver: Mapped[str] = mapped_column(String(180), nullable=False)
+    source: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    source_system: Mapped[str] = mapped_column(String(120), default="manual", nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    severity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    raw_payload_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+
+
+class SupplierEvidenceScoringVersion(Base, TimestampMixin):
+    __tablename__ = "supplier_evidence_scoring_versions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "version", name="uq_supplier_evidence_scoring_version"),
+        Index("ix_supplier_evidence_scoring_active", "tenant_id", "is_active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), ForeignKey("tenants.tenant_id"), default="demo-tenant", nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(150), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    signal_type_weights_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    supplier_criticality_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(150), default="system", nullable=False)
+
+
+class SupplierEvidenceRun(Base, TimestampMixin):
+    __tablename__ = "supplier_evidence_runs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "run_id", name="uq_supplier_evidence_run"),
+        Index("ix_supplier_evidence_runs_tenant_status", "tenant_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), ForeignKey("tenants.tenant_id"), default="demo-tenant", nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    scoring_version: Mapped[str] = mapped_column(String(150), default="default-v1", nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="completed", nullable=False)
+    supplier_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    narrative_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    llm_provider: Mapped[str] = mapped_column(String(80), default="deterministic", nullable=False)
+    llm_model: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    prompt_policy: Mapped[str] = mapped_column(String(255), default="STRUCTURED EVIDENCE ONLY", nullable=False)
+
+
+class SupplierEvidenceRunSupplier(Base, TimestampMixin):
+    __tablename__ = "supplier_evidence_run_suppliers"
+    __table_args__ = (Index("ix_supplier_evidence_run_suppliers_run", "tenant_id", "run_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), ForeignKey("tenants.tenant_id"), default="demo-tenant", nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    supplier_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    supplier_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(50), default="low", nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    top_risk_drivers_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    evidence_chain_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    recommended_actions_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+
+
+class SupplierEvidenceAction(Base, TimestampMixin):
+    __tablename__ = "supplier_evidence_actions"
+    __table_args__ = (Index("ix_supplier_evidence_actions_run_status", "tenant_id", "run_id", "status"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), ForeignKey("tenants.tenant_id"), default="demo-tenant", nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    supplier_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    supplier_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    source_driver: Mapped[str] = mapped_column(String(180), default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="open", nullable=False)
+    owner: Mapped[str] = mapped_column(String(150), default="", nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(150), default="", nullable=False)
+
+
+class SupplierConnectorSync(Base, TimestampMixin):
+    __tablename__ = "supplier_connector_syncs"
+    __table_args__ = (Index("ix_supplier_connector_syncs_tenant_source", "tenant_id", "source_system"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), ForeignKey("tenants.tenant_id"), default="demo-tenant", nullable=False, index=True)
+    source_system: Mapped[str] = mapped_column(String(120), nullable=False)
+    connector_type: Mapped[str] = mapped_column(String(80), default="api", nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="completed", nullable=False)
+    records_received: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    records_accepted: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+
+
+class SupplierHistoricalOutcome(Base, TimestampMixin):
+    __tablename__ = "supplier_historical_outcomes"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "supplier_id", "event_type", "event_date", name="uq_supplier_historical_outcome"),
+        Index("ix_supplier_historical_outcomes_tenant_supplier", "tenant_id", "supplier_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), ForeignKey("tenants.tenant_id"), default="demo-tenant", nullable=False, index=True)
+    supplier_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    severity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    source: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+
+
 class ScenarioRun(Base, TimestampMixin):
     __tablename__ = "scenario_runs"
     __table_args__ = (Index("ix_scenario_runs_tenant_status", "tenant_id", "status"),)

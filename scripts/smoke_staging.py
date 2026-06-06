@@ -57,9 +57,18 @@ def auth_headers(env: Mapping[str, str]) -> dict[str, str]:
     return {}
 
 
-def request_json(base_url: str, path: str, headers: Mapping[str, str] | None = None, timeout: int = 10) -> SmokeResponse:
+def request_json(
+    base_url: str,
+    path: str,
+    headers: Mapping[str, str] | None = None,
+    timeout: int = 10,
+    method: str = "GET",
+    payload: Mapping[str, object] | None = None,
+) -> SmokeResponse:
     url = urljoin(base_url, path.lstrip("/"))
-    request = Request(url, headers=dict(headers or {}), method="GET")
+    data = None if payload is None else json.dumps(dict(payload)).encode("utf-8")
+    request_headers = {"Content-Type": "application/json", **dict(headers or {})}
+    request = Request(url, data=data, headers=request_headers, method=method)
     try:
         with urlopen(request, timeout=timeout) as response:
             return SmokeResponse(
@@ -134,7 +143,102 @@ def _protected_route_check(response: SmokeResponse) -> tuple[str, bool, str]:
     )
 
 
-def run_smoke(base_url: str, headers: Mapping[str, str]) -> int:
+def _payload_check(
+    name: str,
+    response: SmokeResponse,
+    predicate,
+    failure_message: str,
+) -> tuple[str, bool, str]:
+    basic = _api_json_check(name, response)
+    if not basic[1]:
+        return basic
+    payload = _json_payload(response)
+    if not isinstance(payload, dict) or not predicate(payload):
+        return (name, False, f"{failure_message}: {redact(payload)}")
+    return (name, True, f"HTTP {response.status} {redact(payload)}")
+
+
+def _workflow_checks(
+    base_url: str,
+    headers: Mapping[str, str],
+    connector_mode: str,
+) -> list[tuple[str, bool, str]]:
+    checks: list[tuple[str, bool, str]] = []
+    connector = request_json(base_url, "/evidence/connectors/news/sync", headers=headers, method="POST")
+    checks.append(
+        _payload_check(
+            "connector sync",
+            connector,
+            lambda payload: (
+                payload.get("status") == "completed"
+                and int(payload.get("records_accepted", 0)) > 0
+            )
+            or (
+                connector_mode == "public"
+                and payload.get("status") == "skipped"
+            ),
+            "Connector sync did not return a valid mode-aware status",
+        )
+    )
+
+    scoring = request_json(base_url, "/evidence/scoring-config/current", headers=headers)
+    checks.append(
+        _payload_check(
+            "scoring config read",
+            scoring,
+            lambda payload: bool(payload.get("version")),
+            "Scoring config did not return a version",
+        )
+    )
+
+    run = request_json(
+        base_url,
+        "/evidence/runs",
+        headers=headers,
+        method="POST",
+        payload={"include_demo_signals": False},
+    )
+    checks.append(
+        _payload_check(
+            "evidence-chain run",
+            run,
+            lambda payload: payload.get("status") == "completed" and bool(payload.get("run_id")),
+            "Evidence-chain run did not complete",
+        )
+    )
+    run_payload = _json_payload(run)
+    action_id = None
+    if isinstance(run_payload, dict):
+        actions = run_payload.get("actions") or []
+        if actions and isinstance(actions[0], dict):
+            action_id = actions[0].get("id")
+    if action_id:
+        action = request_json(
+            base_url,
+            f"/evidence/actions/{action_id}",
+            headers=headers,
+            method="PATCH",
+            payload={"status": "in_progress", "owner": "smoke-test"},
+        )
+        checks.append(
+            _payload_check(
+                "action update",
+                action,
+                lambda payload: payload.get("status") == "in_progress",
+                "Evidence action was not updated",
+            )
+        )
+    else:
+        checks.append(("action update", False, "Evidence run did not return an action id."))
+    return checks
+
+
+def run_smoke(
+    base_url: str,
+    headers: Mapping[str, str],
+    *,
+    health_only: bool = False,
+) -> int:
     checks: list[tuple[str, bool, str]] = []
 
     live = request_json(base_url, "/live")
@@ -145,15 +249,30 @@ def run_smoke(base_url: str, headers: Mapping[str, str]) -> int:
 
     ready = request_json(base_url, "/ready")
     checks.append(_api_json_check("/ready", ready))
+    ready_payload = _json_payload(ready)
+    connector_mode = ""
+    if isinstance(ready_payload, dict):
+        connectors = ready_payload.get("connectors")
+        if isinstance(connectors, dict):
+            connector_mode = str(connectors.get("mode") or "")
 
     protected = request_json(base_url, "/suppliers")
     checks.append(_protected_route_check(protected))
 
-    if headers:
+    if health_only:
+        checks.append(("authenticated workflow", True, "skipped by explicit --health-only option"))
+    elif headers:
         suppliers = request_json(base_url, "/suppliers", headers=headers)
         checks.append(_api_json_check("/suppliers with auth", suppliers))
+        checks.extend(_workflow_checks(base_url, headers, connector_mode))
     else:
-        checks.append(("optional authenticated /suppliers", True, "skipped; set STAGING_BEARER_TOKEN or STAGING_TENANT_ID + STAGING_API_KEY"))
+        checks.append(
+            (
+                "authenticated workflow",
+                False,
+                "missing credentials; set STAGING_BEARER_TOKEN or STAGING_TENANT_ID + STAGING_API_KEY",
+            )
+        )
 
     for name, ok, detail in checks:
         state = "PASS" if ok else "FAIL"
@@ -164,10 +283,15 @@ def run_smoke(base_url: str, headers: Mapping[str, str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Smoke test a staging Supplier Intelligence API.")
     parser.add_argument("--base-url", default=os.getenv("STAGING_BASE_URL", ""), help="Staging API base URL.")
+    parser.add_argument(
+        "--health-only",
+        action="store_true",
+        help="Check public health/auth rejection only; skip authenticated evidence workflows.",
+    )
     args = parser.parse_args(argv)
     try:
         base_url = normalize_base_url(args.base_url)
-        return run_smoke(base_url, auth_headers(os.environ))
+        return run_smoke(base_url, auth_headers(os.environ), health_only=args.health_only)
     except Exception as exc:
         print(f"Smoke test failed: {redact(exc)}", file=sys.stderr)
         return 2

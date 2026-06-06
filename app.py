@@ -31,6 +31,10 @@ from news_intelligence import (
     run_sentinel_scan,
     SEVERITY_COLORS, SEVERITY_ICONS, DISRUPTION_ICONS,
 )
+from src.services.supplier_risk_evidence_chain import (
+    build_supplier_risk_evidence_chains,
+    load_demo_supplier_signals,
+)
 from pilot_security import (
     authenticate_user,
     change_user_password,
@@ -66,6 +70,13 @@ try:
     PRODUCTION_FOUNDATION_AVAILABLE = True
 except Exception:
     PRODUCTION_FOUNDATION_AVAILABLE = False
+
+try:
+    from src.services.streamlit_api_client import StreamlitApiClient, friendly_api_error
+
+    STREAMLIT_API_CLIENT_AVAILABLE = True
+except Exception:
+    STREAMLIT_API_CLIENT_AVAILABLE = False
 
 try:
     from dotenv import load_dotenv
@@ -250,6 +261,20 @@ def get_graph_metrics(network_data):
     resilience = compute_network_resilience_score(G)
     spofs = identify_single_points_of_failure(G)
     return centralities, resilience, spofs
+
+
+@st.cache_data
+def get_supplier_risk_evidence_chain_reports():
+    return build_supplier_risk_evidence_chains(load_demo_supplier_signals())
+
+
+@st.cache_data
+def load_demo_scenario_profiles():
+    scenario_path = Path(get_secret_or_env("SUPPLIER_DEMO_SCENARIO_PATH", "data/demo_supplier_scenarios.json"))
+    if not scenario_path.exists():
+        return []
+    with scenario_path.open(encoding="utf-8") as handle:
+        return list(json.load(handle))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -634,6 +659,7 @@ tab_labels = [
     "📁 Data Upload",
     "📡 Sentinel Agent",
 ]
+tab_labels.insert(8, "Evidence Chains")
 tab_labels.extend(["Production Command Center", "Alerts & Health"])
 if enterprise_context().role == "platform_admin":
     tab_labels.append("Enterprise Admin")
@@ -641,10 +667,10 @@ if is_admin(current_user()):
     tab_labels.append("🛡️ Admin & Audit")
 
 tabs = st.tabs(tab_labels)
-tab_dashboard, tab_network, tab_scenarios, tab_monte_carlo, tab_scorecard, tab_decision, tab_upload, tab_sentinel = tabs[:8]
-tab_command = tabs[8]
-tab_alerts = tabs[9]
-next_tab_index = 10
+tab_dashboard, tab_network, tab_scenarios, tab_monte_carlo, tab_scorecard, tab_decision, tab_upload, tab_sentinel, tab_evidence = tabs[:9]
+tab_command = tabs[9]
+tab_alerts = tabs[10]
+next_tab_index = 11
 tab_enterprise_admin = None
 if enterprise_context().role == "platform_admin":
     tab_enterprise_admin = tabs[next_tab_index]
@@ -1899,6 +1925,242 @@ with tab_sentinel:
 # ADMIN & AUDIT
 # ═══════════════════════════════════════════════════════════════════
 
+with tab_evidence:
+    st.markdown("#### Supplier Risk Evidence Chain")
+    st.caption(
+        "Deterministic pilot view connecting weak signals to explainable risk drivers, "
+        "supplier-level scores, and practical mitigation actions."
+    )
+
+    evidence_api_url = get_secret_or_env("SUPPLIER_API_BASE_URL", "")
+    evidence_reports = []
+    if not evidence_api_url:
+        st.caption("Local demo evidence is active. Configure SUPPLIER_API_BASE_URL for tenant-backed evidence.")
+        scenario_profiles = load_demo_scenario_profiles()
+        scenario_by_label = {
+            f"{item['supplier_name']} - {item['scenario'].replace('_', ' ').title()}": item
+            for item in scenario_profiles
+        }
+        selected_scenario_label = st.selectbox(
+            "Demo scenario",
+            ["Portfolio overview", *scenario_by_label],
+            key="evidence_demo_scenario",
+        )
+        if selected_scenario_label != "Portfolio overview":
+            scenario = scenario_by_label[selected_scenario_label]
+            sc1, sc2, sc3 = st.columns(3)
+            sc1.metric("Supplier", scenario["supplier_name"])
+            sc2.metric("Scenario Risk", f"{scenario['risk_score']}/100")
+            sc3.metric("Category", scenario["category"])
+            st.info(scenario["story"])
+
+    if evidence_api_url and STREAMLIT_API_CLIENT_AVAILABLE:
+        try:
+            active_evidence_context = enterprise_context()
+            evidence_api = StreamlitApiClient.from_env(
+                evidence_api_url,
+                tenant_id=active_evidence_context.tenant_id,
+            )
+            connector_catalog = evidence_api.request("/evidence/connectors")
+            connector_syncs = evidence_api.request("/evidence/connectors/syncs")
+            recent_api_signals = evidence_api.request("/evidence/signals")
+            evidence_runs = evidence_api.request("/evidence/runs")
+            if evidence_runs:
+                latest_run = evidence_api.request(f"/evidence/runs/{evidence_runs[0]['run_id']}")
+                evidence_reports = list(latest_run.get("suppliers") or [])
+
+            st.markdown("##### Connector Operations")
+            co1, co2, co3 = st.columns(3)
+            co1.metric("Connector Mode", str(connector_catalog.get("mode", "unknown")).title())
+            co2.metric(
+                "Last Sync",
+                connector_syncs[0]["status"].title() if connector_syncs else "Not Run",
+            )
+            co3.metric("Ingested Signals", len(recent_api_signals))
+
+            selected_connector = st.selectbox(
+                "Connector",
+                ["news", "filings", "hiring"],
+                key="evidence_connector_name",
+            )
+            if st.button(
+                "Run Connector Sync",
+                disabled=not can_mutate(),
+                key="evidence_connector_sync",
+            ):
+                sync_result = evidence_api.request(
+                    f"/evidence/connectors/{selected_connector}/sync",
+                    method="POST",
+                )
+                if sync_result.get("status") == "completed":
+                    st.success(
+                        f"{selected_connector.title()} sync completed with "
+                        f"{sync_result.get('records_accepted', 0)} accepted signals."
+                    )
+                else:
+                    st.warning(
+                        f"{selected_connector.title()} sync {sync_result.get('status', 'degraded')}: "
+                        f"{sync_result.get('error', 'No records accepted.')}"
+                    )
+                st.rerun()
+
+            if connector_syncs:
+                st.dataframe(
+                    pd.DataFrame(connector_syncs[:10])[
+                        [
+                            "source_system",
+                            "status",
+                            "records_accepted",
+                            "started_at",
+                            "finished_at",
+                            "error",
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            if recent_api_signals:
+                st.markdown("##### Recently Ingested Signals")
+                st.dataframe(
+                    pd.DataFrame(recent_api_signals[:10])[
+                        [
+                            "supplier_name",
+                            "signal_type",
+                            "driver",
+                            "source",
+                            "observed_at",
+                            "severity",
+                            "confidence",
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            if st.button(
+                "Run Evidence Chain",
+                disabled=not can_mutate(),
+                key="evidence_run_chain",
+            ):
+                run_result = evidence_api.request(
+                    "/evidence/runs",
+                    method="POST",
+                    payload={"include_demo_signals": False},
+                )
+                evidence_reports = list(run_result.get("suppliers") or [])
+                st.success(
+                    f"Evidence run completed for {len(evidence_reports)} suppliers "
+                    f"with scoring version {run_result.get('scoring_version', 'default-v1')}."
+                )
+        except Exception as exc:
+            st.error(friendly_api_error(exc))
+
+    if not evidence_api_url:
+        evidence_reports = get_supplier_risk_evidence_chain_reports()
+    elif not evidence_reports:
+        st.info(
+            "No persisted evidence run is available for the active tenant. "
+            "Ingest signals, then run the evidence chain."
+        )
+    total_signals = sum(len(report["evidence_chain"]) for report in evidence_reports)
+    high_or_worse = sum(1 for report in evidence_reports if report["risk_level"] in {"critical", "high"})
+    avg_confidence = (
+        sum(report["confidence"] for report in evidence_reports) / len(evidence_reports)
+        if evidence_reports
+        else 0
+    )
+
+    ec1, ec2, ec3, ec4 = st.columns(4)
+    ec1.metric("Suppliers", len(evidence_reports))
+    ec2.metric("Weak Signals", total_signals)
+    ec3.metric("Critical / High", high_or_worse)
+    ec4.metric("Avg Confidence", f"{avg_confidence:.0%}")
+
+    summary_rows = [
+        {
+            "Supplier": report["supplier_name"],
+            "Risk Score": report["risk_score"],
+            "Risk Level": report["risk_level"].title(),
+            "Top Driver": report["top_risk_drivers"][0]["driver"] if report["top_risk_drivers"] else "",
+            "Confidence": f"{report['confidence']:.0%}",
+        }
+        for report in evidence_reports
+    ]
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    chart_df = pd.DataFrame(
+        [
+            {
+                "supplier_name": report["supplier_name"],
+                "risk_score": report["risk_score"],
+                "risk_level": report["risk_level"],
+            }
+            for report in evidence_reports
+        ]
+    )
+    if not chart_df.empty:
+        chart = px.bar(
+            chart_df.sort_values("risk_score"),
+            x="risk_score",
+            y="supplier_name",
+            orientation="h",
+            color="risk_level",
+            color_discrete_map={
+                "critical": "#ef4444",
+                "high": "#f59e0b",
+                "medium": "#3b82f6",
+                "low": "#10b981",
+            },
+            labels={"risk_score": "Risk score", "supplier_name": ""},
+        )
+        chart.update_layout(height=320, margin=dict(l=8, r=8, t=10, b=8), showlegend=True)
+        st.plotly_chart(chart, use_container_width=True)
+
+    for report in evidence_reports:
+        title = f"{report['supplier_name']} - {report['risk_level'].title()} ({report['risk_score']:.1f})"
+        with st.expander(title, expanded=report["risk_level"] in {"critical", "high"}):
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Risk Score", f"{report['risk_score']:.1f}/100")
+            r2.metric("Risk Level", report["risk_level"].title())
+            r3.metric("Confidence", f"{report['confidence']:.0%}")
+
+            st.markdown("**Top Risk Drivers**")
+            driver_rows = [
+                {
+                    "Driver": driver["driver"],
+                    "Contribution": driver["contribution"],
+                    "Signal IDs": ", ".join(driver["signal_ids"]),
+                    "Sources": ", ".join(driver["sources"]),
+                }
+                for driver in report["top_risk_drivers"]
+            ]
+            st.dataframe(pd.DataFrame(driver_rows), use_container_width=True, hide_index=True)
+
+            st.markdown("**Evidence Chain**")
+            for evidence in report["evidence_chain"]:
+                st.markdown(
+                    f"- **{evidence['driver']}** from `{evidence['source']}` "
+                    f"(`{evidence['signal_id']}`, {evidence['signal_type']}, "
+                    f"severity {evidence['severity']}, confidence {evidence['confidence']:.0%}): "
+                    f"{evidence['summary']}"
+                )
+
+            st.markdown("**Recommended Actions**")
+            for action in report["recommended_actions"]:
+                st.markdown(f"- {action}")
+
+    st.download_button(
+        "Export Evidence Chain JSON",
+        data=json.dumps(evidence_reports, indent=2).encode(),
+        file_name=f"supplier_risk_evidence_chain_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.json",
+        mime="application/json",
+        disabled=not can_mutate(),
+        on_click=audit,
+        args=("report.export_evidence_chain_json", {"supplier_count": len(evidence_reports)}),
+    )
+    if not can_mutate():
+        st.caption("Viewer role can inspect evidence chains but cannot export reports.")
+
+
 with tab_command:
     st.markdown("#### Production Command Center")
     st.caption("Operational view for API, database, monitoring, security, and data freshness.")
@@ -1929,6 +2191,15 @@ with tab_command:
         if status["production_issues"]:
             for issue in status["production_issues"]:
                 st.warning(issue)
+
+        configured_api_url = get_secret_or_env("SUPPLIER_API_BASE_URL", "")
+        if configured_api_url:
+            try:
+                api_client = StreamlitApiClient.from_env(configured_api_url)
+                api_health = api_client.request("/health")
+                st.success(f"Configured API reachable: {api_health.get('status', 'unknown')}")
+            except Exception as exc:
+                st.error(friendly_api_error(exc))
 
         st.markdown("##### Monitoring Jobs")
         col_job1, col_job2, col_job3 = st.columns(3)

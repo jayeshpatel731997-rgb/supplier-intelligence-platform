@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
 
 from src.config import Settings
 from src.database import database_health
@@ -10,7 +11,9 @@ from src.observability.logging import redact_secret_text
 from src.repositories.alerts import AlertRepository
 from src.repositories.jobs import JobRepository
 from src.repositories.suppliers import SupplierRepository
+from src.models import SupplierEvidenceScoringVersion
 from src.services.scheduler import LocalJobScheduler
+from src.services.supplier_evidence_service import SupplierEvidenceService
 from src.services.worker_queue import get_worker_mode
 from src.tenancy import DEMO_TENANT_ID
 
@@ -18,6 +21,11 @@ from src.tenancy import DEMO_TENANT_ID
 def _base_status(settings: Settings, database: dict) -> dict:
     return {
         "database": database,
+        "backend": {
+            "requested": settings.data_backend,
+            "active": settings.active_data_backend,
+            "fallback": settings.data_backend == "convex",
+        },
         "api": {"ok": bool(database.get("ok")), "status": "ready" if database.get("ok") else "degraded"},
         "worker": {"status": "unknown", "enabled": settings.scheduler_enabled},
         "worker_mode": get_worker_mode(settings),
@@ -29,6 +37,24 @@ def _base_status(settings: Settings, database: dict) -> dict:
             "provider": settings.auth_provider,
             "mfa_required": settings.mfa_required,
             "scim_enabled": settings.scim_enabled,
+        },
+        "connectors": {
+            "mode": settings.connector_mode,
+            "stub_available": True,
+            "public_available": True,
+            "last_sync_status": "unknown",
+        },
+        "scoring_config": {"available": False, "version": ""},
+        "convex": {
+            "configured": settings.convex_configured,
+            "status": "configured" if settings.convex_configured else "not_configured",
+        },
+        "llm_narrative": {
+            "provider": settings.llm_narrative_provider,
+            "configured": settings.llm_narrative_provider == "none",
+            "available": settings.llm_narrative_provider == "none",
+            "status": "deterministic" if settings.llm_narrative_provider == "none" else "interface_only",
+            "fallback": "deterministic",
         },
         "rate_limit": {
             "enabled": settings.rate_limit_enabled,
@@ -74,10 +100,26 @@ def system_status(
             jobs = JobRepository(session, tenant_id)
             last_failure = jobs.last_failure()
             scheduler = LocalJobScheduler(settings, session_factory)
+            evidence = SupplierEvidenceService(session, tenant_id)
+            scoring_config = session.scalar(
+                select(SupplierEvidenceScoringVersion)
+                .where(
+                    SupplierEvidenceScoringVersion.tenant_id == tenant_id,
+                    SupplierEvidenceScoringVersion.is_active.is_(True),
+                )
+                .order_by(SupplierEvidenceScoringVersion.created_at.desc())
+            )
+            syncs = evidence.list_connector_syncs(limit=1)
             status["worker"] = scheduler.status(tenant_id)
             status["monitored_suppliers"] = len(suppliers)
             status["open_alerts"] = alerts.count_open()
             status["last_failed_job"] = JobRepository.to_dict(last_failure) if last_failure else None
+            status["scoring_config"] = {
+                "available": True,
+                "version": scoring_config.version if scoring_config else "default-v1",
+            }
+            if syncs:
+                status["connectors"]["last_sync_status"] = syncs[0]["status"]
             return status
     except Exception as exc:
         status["api"] = {"ok": False, "status": "degraded"}
