@@ -16,7 +16,7 @@ services:
     autoDeploy: true
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
-    dockerCommand: /bin/sh -c "python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+    dockerCommand: sh scripts/start_api_render.sh
     healthCheckPath: /live
     envVars:
       - fromGroup: supplier-intelligence-staging
@@ -42,7 +42,7 @@ services:
     autoDeploy: true
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    dockerCommand: /bin/sh -c "streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0"
+    dockerCommand: sh scripts/start_ui_render.sh
     healthCheckPath: /_stcore/health
     envVars:
       - fromGroup: supplier-intelligence-staging

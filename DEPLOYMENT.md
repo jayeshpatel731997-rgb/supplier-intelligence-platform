@@ -71,17 +71,22 @@ services.
 - `supplier-intelligence-ui`: Streamlit using the root `Dockerfile`
 - Render Postgres
 
-The API service start command is:
+The API service Docker command is:
 
 ```bash
-python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}
+sh scripts/start_api_render.sh
 ```
 
-The UI service start command is:
+The UI service Docker command is:
 
 ```bash
-streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0
+sh scripts/start_ui_render.sh
 ```
+
+The launchers use `${PORT:-10000}` internally. The API launcher runs Alembic
+migrations before replacing itself with Uvicorn; the UI launcher replaces
+itself with Streamlit. Keeping sequencing inside scripts avoids Render treating
+a quoted multi-command `dockerCommand` as one executable name.
 
 The API Blueprint uses `/live` for Render's process health check; use `/ready`
 and `scripts/smoke_staging.py` against the API service URL to verify that

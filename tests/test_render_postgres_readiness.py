@@ -62,7 +62,7 @@ def test_render_blueprints_use_alembic_without_create_all_fallback():
     for blueprint in ("render.yaml", "render.full.yaml"):
         text = (ROOT / blueprint).read_text(encoding="utf-8")
 
-        assert "python scripts/migrate.py" in text
+        assert "dockerCommand: sh scripts/start_api_render.sh" in text
         assert "--create-all-fallback" not in text
         assert "healthCheckPath: /live" in text
 
@@ -73,11 +73,30 @@ def test_render_blueprints_keep_api_and_ui_services_separate():
 
         assert "name: supplier-intelligence-api" in text
         assert "dockerfilePath: ./backend/Dockerfile" in text
-        assert "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}" in text
+        assert "dockerCommand: sh scripts/start_api_render.sh" in text
         assert "name: supplier-intelligence-ui" in text
         assert "dockerfilePath: ./Dockerfile" in text
-        assert "streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0" in text
+        assert "dockerCommand: sh scripts/start_ui_render.sh" in text
         assert "healthCheckPath: /_stcore/health" in text
+
+
+def test_render_startup_scripts_use_exec_and_render_port():
+    api_script = (ROOT / "scripts" / "start_api_render.sh").read_text(encoding="utf-8")
+    ui_script = (ROOT / "scripts" / "start_ui_render.sh").read_text(encoding="utf-8")
+
+    assert api_script.startswith("#!/usr/bin/env sh\nset -e\n")
+    assert "python scripts/migrate.py" in api_script
+    assert 'exec uvicorn backend.main:app --host 0.0.0.0 --port "${PORT:-10000}"' in api_script
+    assert ui_script.startswith("#!/usr/bin/env sh\nset -e\n")
+    assert 'exec streamlit run app.py --server.port="${PORT:-10000}" --server.address=0.0.0.0' in ui_script
+
+
+def test_render_web_services_do_not_embed_quoted_shell_commands():
+    for blueprint in ("render.yaml", "render.full.yaml"):
+        text = (ROOT / blueprint).read_text(encoding="utf-8")
+
+        assert 'dockerCommand: /bin/sh -c "python scripts/migrate.py && uvicorn' not in text
+        assert 'dockerCommand: /bin/sh -c "streamlit run app.py' not in text
 
 
 def test_render_runbook_matches_blueprint_auth_and_resource_truth():

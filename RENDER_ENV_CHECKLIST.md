@@ -18,8 +18,8 @@ worker, `supplier-intelligence-ui`, and cron jobs.
 
 `render.yaml` and `render.full.yaml` create separate web services:
 
-- `supplier-intelligence-api`: `python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}`
-- `supplier-intelligence-ui`: `streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0`
+- `supplier-intelligence-api`: `sh scripts/start_api_render.sh`
+- `supplier-intelligence-ui`: `sh scripts/start_ui_render.sh`
 
 They set these non-secret values:
 

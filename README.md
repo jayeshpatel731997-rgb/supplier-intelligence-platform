@@ -167,8 +167,11 @@ https://dashboard.render.com/blueprint/new?repo=https://github.com/jayeshpatel73
 ```
 
 The default `render.yaml` creates separate Render web services:
-`supplier-intelligence-api` runs FastAPI with `uvicorn backend.main:app`, and
-`supplier-intelligence-ui` runs Streamlit with `streamlit run app.py`.
+`supplier-intelligence-api` runs `sh scripts/start_api_render.sh`, which applies
+migrations and then starts FastAPI, and `supplier-intelligence-ui` runs
+`sh scripts/start_ui_render.sh`, which starts Streamlit. The scripts use
+Render's `PORT` with a `10000` fallback and avoid quoted multi-command Docker
+overrides.
 `render.full.yaml` keeps the same API/UI split and adds Redis, worker, and cron
 services. See `RENDER_STAGING_RUNBOOK.md` for the exact staging launch checklist.
 Real Render staging runs with `SUPPLIER_SECURITY_MODE=production`,

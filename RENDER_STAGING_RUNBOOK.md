@@ -112,16 +112,23 @@ The current scanner is an integration boundary, not proof of malware scanning.
 Apply the Blueprint and wait for:
 
 - Postgres to become available.
-- The API migration command to complete before Uvicorn starts.
+- `sh scripts/start_api_render.sh` to complete migrations before Uvicorn starts.
 - The API `/live` health check to pass.
-- The Streamlit `/_stcore/health` check to pass.
+- `sh scripts/start_ui_render.sh` to start Streamlit and pass
+  `/_stcore/health`.
+
+The Blueprint uses small shell scripts because Render's Docker command override
+must not contain a quoted multi-command expression. Both scripts use Render's
+`PORT` and fall back to port `10000`; the API launcher replaces itself with
+Uvicorn after a successful migration, and the UI launcher replaces itself with
+Streamlit.
 
 `/live` proves process availability only. `/ready` must remain HTTP `503` until
 Postgres, explicit CORS, OIDC, and S3-compatible storage configuration pass.
 
 ## 5. Managed Postgres Migration
 
-The API start command already runs `python scripts/migrate.py`. For a separate
+The API launcher already runs `python scripts/migrate.py`. For a separate
 operator-run migration, first verify out of band that the URL targets the
 approved staging database and that a backup or disposable database branch
 exists.
