@@ -203,20 +203,30 @@ def seed_demo_data(
     active_settings = settings or get_settings()
     factory = session_factory or create_session_factory(active_settings)
     staging_api_key = os.getenv("SUPPLIER_DEMO_API_KEY", "").strip()
-    if active_settings.is_staging_or_production and (
-        not staging_api_key or staging_api_key == "demo-api-key"
-    ):
-        raise RuntimeError(
-            "SUPPLIER_DEMO_API_KEY must be explicitly set to a non-default secret before staging seed."
-        )
+    staging_username = os.getenv("SUPPLIER_STAGING_SEED_USERNAME", "").strip()
+    if active_settings.is_staging_or_production:
+        if active_settings.auth_provider == "oidc" and not staging_username:
+            raise RuntimeError(
+                "SUPPLIER_STAGING_SEED_USERNAME must match the staging OIDC subject or verified email."
+            )
+        if active_settings.auth_provider == "local" and (
+            not staging_api_key or staging_api_key == "demo-api-key"
+        ):
+            raise RuntimeError(
+                "SUPPLIER_DEMO_API_KEY must be explicitly set to a non-default secret for a local-auth staging exception."
+            )
     with factory() as session:
         if active_settings.is_staging_or_production:
-            TenantRepository(session).ensure_demo_seed(
-                raw_key=staging_api_key,
-                username="demo-staging-risk-manager",
-                role="risk_manager",
-                revoke_usernames=(DEMO_PLATFORM_ADMIN,),
-            )
+            tenants = TenantRepository(session)
+            if active_settings.auth_provider == "oidc":
+                tenants.ensure_demo_oidc_membership(staging_username, role="risk_manager")
+            else:
+                tenants.ensure_demo_seed(
+                    raw_key=staging_api_key,
+                    username="demo-staging-risk-manager",
+                    role="risk_manager",
+                    revoke_usernames=(DEMO_PLATFORM_ADMIN,),
+                )
         else:
             TenantRepository(session).ensure_demo_seed()
         scenarios = load_demo_scenarios(scenario_path)

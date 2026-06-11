@@ -49,6 +49,11 @@ Render also generates:
 
 - `SUPPLIER_APP_ADMIN_PASSWORD`
 
+Render does not generate `SUPPLIER_DEMO_API_KEY`. The default real staging path
+for protected FastAPI routes is OIDC bearer authentication, not the local/demo
+API key. Streamlit still uses the pilot login; browser OIDC callback handling is
+not implemented.
+
 ## Required Manual Values Before `/ready` Passes
 
 Set these for real staging:
@@ -61,6 +66,8 @@ Set these for real staging:
 - `OIDC_JWKS_URL`
 - `OIDC_ALGORITHMS=RS256` or the exact algorithms your IdP uses
 - `OIDC_CLOCK_SKEW_SECONDS=60`
+- `SUPPLIER_API_BASE_URL=https://<your-api-origin>`
+- `SUPPLIER_STAGING_SEED_USERNAME=<oidc-subject-or-verified-email>` when the deterministic seed is approved
 - `SUPPLIER_UPLOAD_STORAGE_BUCKET`
 - `SUPPLIER_UPLOAD_STORAGE_REGION`
 - `SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL`
@@ -79,6 +86,9 @@ Optional live intelligence values:
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 
+`OIDC_REDIRECT_URI` is a future integration placeholder, not a current
+readiness requirement.
+
 ## Local-Auth Staging Exception
 
 OIDC is the recommended staging path. If you deliberately use local API-key auth
@@ -94,7 +104,10 @@ for a short staging window, set all of the following explicitly:
 Run after the Render deploy:
 
 ```powershell
-$env:STAGING_BASE_URL="https://supplier-intelligence-api.onrender.com"
+$env:STAGING_API_BASE_URL="https://supplier-intelligence-api.onrender.com"
+$env:STAGING_UI_BASE_URL="https://supplier-intelligence-ui.onrender.com"
+$env:STAGING_BEARER_TOKEN="<short-lived-oidc-token>"
+$env:STAGING_EXPECTED_TENANT_ID="demo-tenant"
 python scripts/smoke_staging.py
 ```
 
@@ -102,13 +115,8 @@ Use the `supplier-intelligence-api` URL. The smoke script fails clearly if the
 base URL points at Streamlit and returns HTML fallback instead of FastAPI JSON or
 an API auth rejection.
 
-For an authenticated read check, add either:
-
-```powershell
-$env:STAGING_BEARER_TOKEN="<oidc-token>"
-```
-
-or, only for the local-auth exception:
+Only for the approved local-auth exception, replace the bearer-token variables
+with:
 
 ```powershell
 $env:STAGING_TENANT_ID="<tenant-id>"

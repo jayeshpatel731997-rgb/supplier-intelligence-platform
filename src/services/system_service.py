@@ -81,6 +81,7 @@ def system_status(
     startup_error: str = "",
 ) -> dict:
     status = _base_status(settings, database_health(settings))
+    status["tenant_id"] = tenant_id
     if not status["database"]["ok"]:
         status["status_error"] = redact_secret_text(status["database"].get("error", "") or startup_error)
         return status

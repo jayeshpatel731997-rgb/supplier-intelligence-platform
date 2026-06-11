@@ -21,7 +21,7 @@ import plotly.express as px
 import json
 import os
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from data_ingestion import (
     ingest_file, generate_sample_template,
@@ -502,7 +502,7 @@ def render_login() -> None:
         user = authenticate_user(username, password)
         if user:
             st.session_state.auth_user = user
-            st.session_state.auth_last_seen = datetime.utcnow()
+            st.session_state.auth_last_seen = datetime.now(UTC)
             log_audit(user["username"], user["role"], "auth.login", {})
             st.rerun()
         else:
@@ -515,7 +515,7 @@ if st.session_state.auth_user is None:
     render_login()
 
 last_seen = st.session_state.auth_last_seen
-if last_seen and datetime.utcnow() - last_seen > timedelta(minutes=SESSION_TIMEOUT_MINUTES):
+if last_seen and datetime.now(UTC) - last_seen > timedelta(minutes=SESSION_TIMEOUT_MINUTES):
     expired_user = st.session_state.auth_user
     if expired_user:
         log_audit(expired_user["username"], expired_user["role"], "auth.session_timeout", {})
@@ -524,7 +524,7 @@ if last_seen and datetime.utcnow() - last_seen > timedelta(minutes=SESSION_TIMEO
     st.warning("Session timed out. Please sign in again.")
     render_login()
 
-st.session_state.auth_last_seen = datetime.utcnow()
+st.session_state.auth_last_seen = datetime.now(UTC)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1801,7 +1801,7 @@ with tab_sentinel:
                 st.session_state.sentinel_results = impacts
                 st.session_state.sentinel_mode_used = mode_used
                 st.session_state.sentinel_error = error_msg
-                st.session_state.last_scan_time = datetime.utcnow()
+                st.session_state.last_scan_time = datetime.now(UTC)
                 scan_id = save_sentinel_scan(current_user()["username"], mode_used, impacts)
                 audit(
                     "sentinel.run_scan",
@@ -1900,7 +1900,7 @@ with tab_sentinel:
             st.download_button(
                 "⬇️ Export Sentinel Report (CSV)",
                 data=pd.DataFrame(export_rows).to_csv(index=False).encode(),
-                file_name=f"sentinel_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.csv",
+                file_name=f"sentinel_{datetime.now(UTC).strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
                 disabled=not can_mutate(),
                 on_click=audit,
@@ -2151,7 +2151,7 @@ with tab_evidence:
     st.download_button(
         "Export Evidence Chain JSON",
         data=json.dumps(evidence_reports, indent=2).encode(),
-        file_name=f"supplier_risk_evidence_chain_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.json",
+        file_name=f"supplier_risk_evidence_chain_{datetime.now(UTC).strftime('%Y%m%d_%H%M')}.json",
         mime="application/json",
         disabled=not can_mutate(),
         on_click=audit,
@@ -2520,7 +2520,7 @@ if tab_admin is not None:
                 st.download_button(
                     "Export Audit Log (CSV)",
                     data=audit_df.to_csv(index=False).encode(),
-                    file_name=f"audit_log_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.csv",
+                    file_name=f"audit_log_{datetime.now(UTC).strftime('%Y%m%d_%H%M')}.csv",
                     mime="text/csv",
                     on_click=audit,
                     args=("admin.export_audit_log", {"row_count": len(audit_rows)}),

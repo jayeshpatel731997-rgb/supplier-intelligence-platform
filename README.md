@@ -140,7 +140,7 @@ The compose stack keeps them separate: `streamlit` builds the root `Dockerfile`
 and runs `streamlit run app.py`; `backend` builds `backend/Dockerfile` and runs
 `uvicorn backend.main:app`.
 
-Seed deterministic local or staging demo data:
+Seed deterministic local demo data:
 
 ```bash
 python scripts/seed_demo_data.py --tenant-id demo-tenant
@@ -148,10 +148,10 @@ python scripts/seed_demo_data.py --tenant-id demo-tenant
 
 The seed is idempotent and creates demo suppliers, weak signals, connector sync
 metadata, scoring config, an evidence-chain run, actions, and historical
-outcome examples without requiring external APIs. In staging/production
-deployment modes, set `SUPPLIER_DEMO_API_KEY` to an explicit non-default secret
-before running the seed; the generated staging membership is limited to the
-`risk_manager` role.
+outcome examples without requiring external APIs. For OIDC staging, set
+`SUPPLIER_STAGING_SEED_USERNAME` to the token subject or verified email before
+running the seed; it creates a `risk_manager` membership without creating a
+staging API key.
 
 Render staging:
 
@@ -179,19 +179,21 @@ process health check; `/ready` is the API configuration and database traffic gat
 Smoke test staging after deploy:
 
 ```bash
-set STAGING_BASE_URL=https://supplier-intelligence-api.onrender.com
-set STAGING_TENANT_ID=demo-tenant
-set STAGING_API_KEY=<tenant-api-key>
+set STAGING_API_BASE_URL=https://supplier-intelligence-api.onrender.com
+set STAGING_UI_BASE_URL=https://supplier-intelligence-ui.onrender.com
+set STAGING_BEARER_TOKEN=<short-lived-oidc-token>
+set STAGING_EXPECTED_TENANT_ID=demo-tenant
 python scripts/smoke_staging.py
 ```
 
-Use the FastAPI service URL for `STAGING_BASE_URL`. If this accidentally points
+Use the FastAPI service URL for `STAGING_API_BASE_URL`; `STAGING_BASE_URL`
+remains a compatible alias. If this accidentally points
 at the Streamlit UI service, the smoke script fails when it sees HTML fallback
 instead of API JSON/auth responses. With auth configured, the smoke script also
-runs connector sync, evidence-chain run, action update, and scoring-config read
-checks. Credentials are required by default so workflow checks cannot be
-silently skipped; use `--health-only` only for an explicit unauthenticated
-infrastructure check.
+runs tenant-boundary, connector sync, evidence-chain run, action update, and
+scoring-config checks. Credentials and the Streamlit URL are required by default
+so workflow and UI checks cannot be silently skipped; use
+`--health-only --skip-ui` only for an explicit limited infrastructure check.
 
 Streamlit can target a separate local or staging API service with:
 
@@ -269,6 +271,8 @@ Readiness docs:
 - `MIGRATIONS.md`
 - `WORKER_ARCHITECTURE.md`
 - `AUTH_INTEGRATION.md`
+- `docs/AUTH_STAGING_PLAN.md`
+- `docs/AUTOMATIONS_PLAN.md`
 - `SECRETS_AND_KMS.md`
 - `BACKUP_RESTORE_RUNBOOK.md`
 - `LOAD_TESTING.md`

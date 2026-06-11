@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pandas as pd
@@ -21,7 +21,7 @@ class NewsIntelligenceTests(unittest.TestCase):
                 description="",
                 url="https://example.com",
                 source="Example",
-                published_at=datetime.utcnow(),
+                published_at=datetime.now(UTC),
             ),
             disruption_type="Logistics/Transport",
             severity="High",

@@ -1,135 +1,218 @@
 # Render Staging Launch Runbook
 
-This repo now uses a phased Render launch so you do not pay for the full worker
-stack before the base API proves it can boot on Render.
+This runbook describes the repository as it exists. It is not evidence that a
+remote staging environment has passed.
 
-## Phase 1: API + Postgres
+## Blueprint Truth
 
-`render.yaml` deploys only:
+`render.yaml` deploys all three Phase 1 resources:
 
-- `supplier-intelligence-api`
-- `supplier-intelligence-postgres`
+- `supplier-intelligence-api`: FastAPI web service
+- `supplier-intelligence-ui`: Streamlit web service
+- `supplier-intelligence-postgres`: managed Postgres
 
-This verifies the Docker build, dependency install, Postgres connection,
-Alembic/create-all fallback, tenant seed, request middleware, and health
-endpoints before adding Streamlit, Redis, Celery, and cron jobs.
+It is therefore an **API + Streamlit + Postgres** Blueprint, not an API-only
+Blueprint. Render health-checks the API at `/live` and Streamlit at
+`/_stcore/health`.
 
-## 1. Confirm the Blueprint is on main
+The environment group sets `AUTH_PROVIDER=oidc`,
+`AUTH_ALLOW_LOCAL_IN_PRODUCTION=false`, `SUPPLIER_DEMO_MODE=false`, and
+`SUPPLIER_UPLOAD_STORAGE_PROVIDER=s3`. It generates only
+`SUPPLIER_APP_ADMIN_PASSWORD` for the current Streamlit pilot login. It does not generate
+`SUPPLIER_DEMO_API_KEY`, and real staging must not use the local
+`demo-tenant` / `demo-api-key` credential.
 
-`render.yaml` must live on the repository default branch before opening Render.
+OIDC currently protects FastAPI bearer-token routes. Streamlit still uses its
+pilot/local login and does not implement an end-user OIDC redirect/callback
+flow. The staging smoke therefore validates API OIDC with an externally
+obtained short-lived token and checks only Streamlit process health. Do not
+claim browser SSO readiness from this Blueprint.
+
+`render.full.yaml` keeps the API, Streamlit, and Postgres resources and adds
+Render Key Value, a Celery worker, and two cron services. Do not promote it
+until the base Blueprint has passed real OIDC, Postgres, storage, tenant, and
+authenticated smoke checks.
+
+## 1. Prepare The Revision
+
+The Blueprint must be present on the Git revision Render deploys. Do not merge
+this branch merely to test documentation.
+
+Record:
 
 ```powershell
-git checkout main
-git pull origin main
+git rev-parse HEAD
+git status --short
 ```
 
-## 2. Open the Render Blueprint
+Before deployment, review `render.yaml` in Render and confirm the API and UI
+service names and generated hostnames.
+
+## 2. Create The Blueprint
+
+Open:
 
 ```text
 https://dashboard.render.com/blueprint/new?repo=https://github.com/jayeshpatel731997-rgb/supplier-intelligence-platform
 ```
 
-Render reads `render.yaml` from the repo.
+Render injects `SUPPLIER_DATABASE_URL` and `DATABASE_URL` from the managed
+Postgres resource. Do not copy those values into Git, chat, screenshots, or
+shell history.
 
-## 3. Review generated secrets
+## 3. Configure Real Staging Values
 
-Render can generate shared values in an environment group with `generateValue`.
-This is used for:
+Set these non-secret values in the `supplier-intelligence-staging` environment
+group:
 
-- `SUPPLIER_DEMO_API_KEY`
-- `SUPPLIER_APP_ADMIN_PASSWORD`
-
-After the Blueprint is created, reveal/copy `SUPPLIER_DEMO_API_KEY` from the
-`supplier-intelligence-staging` environment group so you can test protected API
-routes. Do not paste the value into chat or commit it.
-
-Important: Render does not prompt for `sync: false` values inside environment
-groups, so this Blueprint avoids that pattern.
-
-## 4. Apply Phase 1
-
-Click **Apply** and wait for:
-
-- Postgres status: available
-- API deploy status: live
-- API logs: migration command completes and Uvicorn starts
-
-## 5. Verify Phase 1 health
-
-Replace the hostname if Render assigns a suffix.
-
-```powershell
-curl.exe https://supplier-intelligence-api.onrender.com/health
-curl.exe https://supplier-intelligence-api.onrender.com/live
-curl.exe https://supplier-intelligence-api.onrender.com/ready
-curl.exe https://supplier-intelligence-api.onrender.com/worker/health
+```text
+CORS_ALLOW_ORIGINS=https://<streamlit-host>
+OIDC_AUDIENCE=<api-audience-or-client-id>
+OIDC_ALGORITHMS=RS256
+OIDC_CLOCK_SKEW_SECONDS=60
+OIDC_ISSUER_URL=https://<issuer>
+OIDC_JWKS_URL=https://<issuer>/<jwks-path>
+SUPPLIER_API_BASE_URL=https://<api-host>
+SUPPLIER_CONNECTOR_MODE=demo
+SUPPLIER_LLM_NARRATIVE_PROVIDER=none
+SUPPLIER_STAGING_SEED_USERNAME=<oidc-subject-or-verified-email>
+SUPPLIER_UPLOAD_STORAGE_BUCKET=<staging-bucket>
+SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL=https://<storage-endpoint>
+SUPPLIER_UPLOAD_STORAGE_KEY_PREFIX=uploads
+SUPPLIER_UPLOAD_STORAGE_PROVIDER=s3
+SUPPLIER_UPLOAD_STORAGE_REGION=<region>
 ```
 
-Protected API smoke:
+Set these secrets through Render or the approved secret manager:
 
-```powershell
-$env:SUPPLIER_DEMO_API_KEY="<value copied from Render env group>"
-curl.exe `
-  -H "X-Tenant-ID: demo-tenant" `
-  -H "X-API-Key: $env:SUPPLIER_DEMO_API_KEY" `
-  https://supplier-intelligence-api.onrender.com/system/status
+```text
+OIDC_CLIENT_ID=<secret-managed-value>
+OIDC_CLIENT_SECRET=<secret-managed-value>
+SUPPLIER_UPLOAD_STORAGE_ACCESS_KEY_ID=<secret-managed-value>
+SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY=<secret-managed-value>
 ```
 
-Expected result: HTTP 200 with database/system status JSON.
+Optional external intelligence secrets are `NEWSAPI_KEY`, `OPENAI_API_KEY`, and
+`ANTHROPIC_API_KEY`. They are not required for deterministic staging smoke.
+`OIDC_REDIRECT_URI` is reserved for a future browser login integration and is
+not consumed by the current Streamlit UI.
 
-## Phase 2: Full staging stack
+If policy requires content scanning, also configure:
 
-Only after Phase 1 is healthy, promote the full Blueprint:
-
-```powershell
-Copy-Item render.full.yaml render.yaml
-git add render.yaml render.full.yaml RENDER_STAGING_RUNBOOK.md RENDER_ENV_CHECKLIST.md DEPLOYMENT.md README.md
-git commit -m "Promote Render full staging stack"
-git push origin main
+```text
+SUPPLIER_UPLOAD_SCANNER_REQUIRED=true
+SUPPLIER_UPLOAD_SCANNER_PROVIDER=<scanner-provider>
+SUPPLIER_UPLOAD_SCANNER_ENDPOINT_URL=https://<scanner-endpoint>
 ```
 
-The full stack adds:
+The current scanner is an integration boundary, not proof of malware scanning.
 
-- `supplier-intelligence-command-center`
+## 4. Apply And Inspect Startup
+
+Apply the Blueprint and wait for:
+
+- Postgres to become available.
+- The API migration command to complete before Uvicorn starts.
+- The API `/live` health check to pass.
+- The Streamlit `/_stcore/health` check to pass.
+
+`/live` proves process availability only. `/ready` must remain HTTP `503` until
+Postgres, explicit CORS, OIDC, and S3-compatible storage configuration pass.
+
+## 5. Managed Postgres Migration
+
+The API start command already runs `python scripts/migrate.py`. For a separate
+operator-run migration, first verify out of band that the URL targets the
+approved staging database and that a backup or disposable database branch
+exists.
+
+Run from a trusted operator environment without printing the URL:
+
+```powershell
+$env:SUPPLIER_SECURITY_MODE="production"
+$env:SUPPLIER_DEPLOYMENT_MODE="render-staging-phase1"
+$env:SUPPLIER_DEMO_MODE="false"
+$env:AUTH_PROVIDER="oidc"
+$env:SUPPLIER_DATABASE_URL="<managed-staging-postgres-url>"
+.\venv\Scripts\python.exe scripts\migrate.py
+.\venv\Scripts\python.exe scripts\validate_tenant_schema.py
+```
+
+Record the deployed Git revision, Alembic revision, backup identifier, sanitized
+command result, and rollback owner.
+
+## 6. Idempotent OIDC Seed
+
+The deterministic seed is optional and supports only `demo-tenant`. In OIDC
+staging it creates or updates a least-privilege `risk_manager` membership for
+the configured OIDC subject or verified email. It does not create or require a
+staging API key and deactivates existing demo-tenant API keys.
+
+Run it twice against the approved staging database:
+
+```powershell
+$env:SUPPLIER_SECURITY_MODE="production"
+$env:SUPPLIER_DEPLOYMENT_MODE="render-staging-phase1"
+$env:SUPPLIER_DEMO_MODE="false"
+$env:AUTH_PROVIDER="oidc"
+$env:SUPPLIER_DATABASE_URL="<managed-staging-postgres-url>"
+$env:SUPPLIER_STAGING_SEED_USERNAME="<oidc-subject-or-verified-email>"
+.\venv\Scripts\python.exe scripts\seed_demo_data.py --tenant-id demo-tenant
+.\venv\Scripts\python.exe scripts\seed_demo_data.py --tenant-id demo-tenant
+```
+
+Compare the sanitized counts and confirm the second run does not add duplicate
+signals, evidence runs, actions, or connector syncs.
+
+For local development only, `AUTH_PROVIDER=local` uses
+`X-Tenant-ID: demo-tenant` and `X-API-Key: demo-api-key`. A real staging
+local-auth exception requires `AUTH_ALLOW_LOCAL_IN_PRODUCTION=true`, an explicit
+non-default `SUPPLIER_DEMO_API_KEY`, approval, expiration, audit evidence, and
+key revocation after rollback. It is not the default staging path.
+
+## 7. Authenticated Remote Smoke
+
+Obtain a short-lived OIDC token for the seeded membership without printing or
+persisting it. Then run:
+
+```powershell
+$env:STAGING_API_BASE_URL="https://<api-host>"
+$env:STAGING_UI_BASE_URL="https://<streamlit-host>"
+$env:STAGING_BEARER_TOKEN="<short-lived-oidc-token>"
+$env:STAGING_EXPECTED_TENANT_ID="demo-tenant"
+.\venv\Scripts\python.exe scripts\smoke_staging.py
+```
+
+The smoke client checks:
+
+- API `/live`, `/health`, and `/ready`
+- Streamlit `/_stcore/health`
+- missing-auth rejection
+- authenticated supplier read
+- authenticated tenant identity
+- rejection of an `X-Tenant-ID` override in OIDC mode
+- connector sync, scoring configuration, evidence run, and action update
+- API-versus-Streamlit URL mixups
+
+Use `--health-only --skip-ui` only for an explicitly limited infrastructure
+check. That result is not an authenticated staging pass.
+
+## 8. Promote The Worker Stack
+
+After the base Blueprint has passed the real checks above, review
+`render.full.yaml`. It adds:
+
 - `supplier-intelligence-redis`
 - `supplier-intelligence-celery-worker`
 - `supplier-intelligence-sentinel-cron`
 - `supplier-intelligence-risk-cron`
 
-The full stack uses paid worker/cron web-service instance types. Check Render's
-review screen before applying.
-
-## Optional keys after Phase 1
-
-Add these manually to the `supplier-intelligence-staging` environment group only
-when you are ready to test richer integrations:
-
-- `NEWSAPI_KEY`
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `WORKOS_API_KEY`
-- `WORKOS_CLIENT_ID`
-
-The app is designed to run without these keys in demo mode.
-
-## WorkOS later
-
-Keep `AUTH_PROVIDER=local` for this staging launch. When ready:
-
-1. Create a WorkOS application.
-2. Add the Render backend URL as an allowed redirect origin.
-3. Add WorkOS API key/client id to Render env vars.
-4. Implement the real WorkOS/OIDC callback and token validation.
-5. Switch `AUTH_PROVIDER` from `local` to `oidc` or `workos` after tests pass.
+Confirm pricing, Redis connectivity, worker health, retry behavior, tenant
+scope, and cron ownership before replacing `render.yaml`.
 
 ## Rollback
 
-For a bad deploy:
-
-1. Open the failing service in Render.
-2. Go to Deploys.
-3. Select the previous successful deploy.
-4. Roll back.
-
-For a bad migration, restore Postgres from a verified backup before applying a
-code rollback.
+For a bad service deploy, use Render's previous-deploy rollback. For a bad
+migration, restore the verified Postgres backup or disposable branch before
+rolling application code back. Revoke any emergency local-auth key and rerun
+readiness plus authenticated smoke before restoring staging traffic.

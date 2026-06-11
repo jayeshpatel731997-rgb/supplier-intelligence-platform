@@ -86,6 +86,63 @@ def test_valid_oidc_token_is_accepted_for_protected_route(monkeypatch, tmp_path)
     assert response.status_code == 200
 
 
+def test_oidc_missing_or_unknown_tenant_claim_is_denied(monkeypatch, tmp_path):
+    client = _oidc_client(monkeypatch, tmp_path)
+
+    missing_tenant = client.get(
+        "/suppliers",
+        headers={"Authorization": f"Bearer {_token(tenant_id=None)}"},
+    )
+    unknown_tenant = client.get(
+        "/suppliers",
+        headers={"Authorization": f"Bearer {_token(tenant_id='tenant-not-found')}"},
+    )
+
+    assert missing_tenant.status_code == 403
+    assert unknown_tenant.status_code == 403
+    assert missing_tenant.json()["detail"] == "Invalid OIDC bearer token."
+
+
+def test_oidc_ignores_cross_tenant_header_override(monkeypatch, tmp_path):
+    client = _oidc_client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/system/status",
+        headers={
+            "Authorization": f"Bearer {_token()}",
+            "X-Tenant-ID": "tenant-not-authorized",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tenant_id"] == "demo-tenant"
+
+
+def test_oidc_database_membership_role_overrides_token_role(monkeypatch, tmp_path):
+    client = _oidc_client(monkeypatch, tmp_path)
+    assert client.get("/suppliers", headers={"Authorization": f"Bearer {_token()}"}).status_code == 200
+
+    from backend import main
+    from src.repositories.tenants import TenantRepository
+
+    with main.runtime.session_factory() as session:
+        TenantRepository(session).create_membership(
+            "demo-tenant",
+            "demo-platform-admin",
+            "viewer",
+        )
+        session.commit()
+
+    response = client.post(
+        "/evidence/runs",
+        json={},
+        headers={"Authorization": f"Bearer {_token(role='platform_admin')}"},
+    )
+
+    assert response.status_code == 403
+    assert "evidence.run" in response.json()["detail"]
+
+
 def test_oidc_protected_route_rejects_missing_token(monkeypatch, tmp_path):
     client = _oidc_client(monkeypatch, tmp_path)
 

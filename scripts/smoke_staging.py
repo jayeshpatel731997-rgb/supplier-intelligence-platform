@@ -17,7 +17,8 @@ from urllib.request import Request, urlopen
 SECRET_PATTERNS = [
     re.compile(r"(Authorization:\s*Bearer\s+)[^\s]+", re.IGNORECASE),
     re.compile(r"(X-API-Key=)[^\s]+", re.IGNORECASE),
-    re.compile(r"(api[_-]?key[=:])[^,\s]+", re.IGNORECASE),
+    re.compile(r"((?:api[_-]?key|token|secret|password|client[_-]?secret)[=:])[^,\s]+", re.IGNORECASE),
+    re.compile(r"((?:Cookie|Set-Cookie):\s*)[^\r\n]+", re.IGNORECASE),
     re.compile(r"(postgres(?:ql)?(?:\+psycopg)?://[^:/@\s]+:)[^@\s]+(@)", re.IGNORECASE),
     re.compile(r"(DATABASE_URL=)[^\s]+", re.IGNORECASE),
 ]
@@ -40,10 +41,18 @@ def redact(value: object) -> str:
 def normalize_base_url(value: str) -> str:
     base_url = value.strip()
     if not base_url:
-        raise ValueError("STAGING_BASE_URL or --base-url is required.")
+        raise ValueError("STAGING_API_BASE_URL, STAGING_BASE_URL, or --base-url is required.")
     if not base_url.startswith(("http://", "https://")):
         raise ValueError("Staging base URL must start with http:// or https://.")
     return base_url.rstrip("/") + "/"
+
+
+def staging_base_url(env: Mapping[str, str]) -> str:
+    return env.get("STAGING_API_BASE_URL", "").strip() or env.get("STAGING_BASE_URL", "").strip()
+
+
+def staging_ui_base_url(env: Mapping[str, str]) -> str:
+    return env.get("STAGING_UI_BASE_URL", "").strip()
 
 
 def auth_headers(env: Mapping[str, str]) -> dict[str, str]:
@@ -55,6 +64,30 @@ def auth_headers(env: Mapping[str, str]) -> dict[str, str]:
     if tenant_id and api_key:
         return {"X-Tenant-ID": tenant_id, "X-API-Key": api_key}
     return {}
+
+
+def expected_tenant_id(env: Mapping[str, str], headers: Mapping[str, str]) -> str:
+    configured = env.get("STAGING_EXPECTED_TENANT_ID", "").strip()
+    return configured or headers.get("X-Tenant-ID", "").strip()
+
+
+def configuration_errors(
+    env: Mapping[str, str],
+    headers: Mapping[str, str],
+    *,
+    health_only: bool,
+    skip_ui: bool,
+) -> list[str]:
+    errors: list[str] = []
+    if not staging_base_url(env):
+        errors.append("set STAGING_API_BASE_URL to the FastAPI service URL")
+    if not health_only and not headers:
+        errors.append("set STAGING_BEARER_TOKEN for OIDC, or STAGING_TENANT_ID and STAGING_API_KEY for an approved local-auth exception")
+    if not health_only and "Authorization" in headers and not expected_tenant_id(env, headers):
+        errors.append("set STAGING_EXPECTED_TENANT_ID so the OIDC tenant boundary can be verified")
+    if not skip_ui and not staging_ui_base_url(env):
+        errors.append("set STAGING_UI_BASE_URL to the Streamlit service URL, or pass --skip-ui explicitly")
+    return errors
 
 
 def request_json(
@@ -104,7 +137,39 @@ def _json_summary(response: SmokeResponse) -> str:
     if payload is None:
         return ""
     if isinstance(payload, dict):
-        return redact({key: payload.get(key) for key in ("status", "database", "api", "production_issues") if key in payload})
+        summary = {
+            key: payload.get(key)
+            for key in (
+                "status",
+                "tenant_id",
+                "run_id",
+                "version",
+                "connector",
+                "records_accepted",
+                "id",
+            )
+            if key in payload
+        }
+        database = payload.get("database")
+        if isinstance(database, dict):
+            summary["database"] = {
+                key: database.get(key)
+                for key in ("ok", "driver")
+                if key in database
+            }
+        api = payload.get("api")
+        if isinstance(api, dict):
+            summary["api"] = {
+                key: api.get(key)
+                for key in ("ok", "status")
+                if key in api
+            }
+        issues = payload.get("production_issues")
+        if isinstance(issues, list):
+            summary["production_issue_count"] = len(issues)
+        return redact(summary)
+    if isinstance(payload, list):
+        return f"items={len(payload)}"
     return ""
 
 
@@ -143,6 +208,14 @@ def _protected_route_check(response: SmokeResponse) -> tuple[str, bool, str]:
     )
 
 
+def _ui_health_check(response: SmokeResponse) -> tuple[str, bool, str]:
+    if response.status != 200:
+        return ("Streamlit /_stcore/health", False, f"HTTP {response.status}")
+    if _looks_like_html(response):
+        return ("Streamlit /_stcore/health", False, "got HTML instead of the Streamlit health response")
+    return ("Streamlit /_stcore/health", True, f"HTTP {response.status}")
+
+
 def _payload_check(
     name: str,
     response: SmokeResponse,
@@ -154,8 +227,8 @@ def _payload_check(
         return basic
     payload = _json_payload(response)
     if not isinstance(payload, dict) or not predicate(payload):
-        return (name, False, f"{failure_message}: {redact(payload)}")
-    return (name, True, f"HTTP {response.status} {redact(payload)}")
+        return (name, False, f"{failure_message}; HTTP {response.status} {_json_summary(response)}".strip())
+    return (name, True, f"HTTP {response.status} {_json_summary(response)}".strip())
 
 
 def _workflow_checks(
@@ -233,11 +306,55 @@ def _workflow_checks(
     return checks
 
 
+def _tenant_isolation_checks(
+    base_url: str,
+    headers: Mapping[str, str],
+    expected_tenant: str,
+) -> list[tuple[str, bool, str]]:
+    checks: list[tuple[str, bool, str]] = []
+    status = request_json(base_url, "/system/status", headers=headers)
+    checks.append(
+        _payload_check(
+            "authenticated tenant context",
+            status,
+            lambda payload: bool(expected_tenant) and payload.get("tenant_id") == expected_tenant,
+            "Authenticated system status did not confirm the expected tenant",
+        )
+    )
+
+    hostile_tenant = "cross-tenant-smoke-probe"
+    if "Authorization" in headers:
+        override_headers = {**headers, "X-Tenant-ID": hostile_tenant}
+        override = request_json(base_url, "/system/status", headers=override_headers)
+        checks.append(
+            _payload_check(
+                "OIDC tenant header override denied",
+                override,
+                lambda payload: payload.get("tenant_id") == expected_tenant,
+                "X-Tenant-ID changed the OIDC-authenticated tenant",
+            )
+        )
+    else:
+        wrong_tenant_headers = {**headers, "X-Tenant-ID": hostile_tenant}
+        wrong_tenant = request_json(base_url, "/system/status", headers=wrong_tenant_headers)
+        checks.append(
+            (
+                "local API key cross-tenant denial",
+                wrong_tenant.status in {401, 403},
+                f"HTTP {wrong_tenant.status}; expected 401/403 for the wrong tenant",
+            )
+        )
+    return checks
+
+
 def run_smoke(
     base_url: str,
     headers: Mapping[str, str],
     *,
     health_only: bool = False,
+    expected_tenant: str = "",
+    ui_base_url: str = "",
+    skip_ui: bool = True,
 ) -> int:
     checks: list[tuple[str, bool, str]] = []
 
@@ -259,11 +376,19 @@ def run_smoke(
     protected = request_json(base_url, "/suppliers")
     checks.append(_protected_route_check(protected))
 
+    if skip_ui:
+        checks.append(("Streamlit surface", True, "skipped by explicit --skip-ui option"))
+    else:
+        ui_health = request_json(ui_base_url, "/_stcore/health")
+        checks.append(_ui_health_check(ui_health))
+
     if health_only:
         checks.append(("authenticated workflow", True, "skipped by explicit --health-only option"))
     elif headers:
         suppliers = request_json(base_url, "/suppliers", headers=headers)
         checks.append(_api_json_check("/suppliers with auth", suppliers))
+        active_expected_tenant = expected_tenant or headers.get("X-Tenant-ID", "").strip()
+        checks.extend(_tenant_isolation_checks(base_url, headers, active_expected_tenant))
         checks.extend(_workflow_checks(base_url, headers, connector_mode))
     else:
         checks.append(
@@ -282,16 +407,41 @@ def run_smoke(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Smoke test a staging Supplier Intelligence API.")
-    parser.add_argument("--base-url", default=os.getenv("STAGING_BASE_URL", ""), help="Staging API base URL.")
+    parser.add_argument("--base-url", default=staging_base_url(os.environ), help="Staging API base URL.")
+    parser.add_argument("--ui-base-url", default=staging_ui_base_url(os.environ), help="Staging Streamlit base URL.")
     parser.add_argument(
         "--health-only",
         action="store_true",
         help="Check public health/auth rejection only; skip authenticated evidence workflows.",
     )
+    parser.add_argument(
+        "--skip-ui",
+        action="store_true",
+        help="Skip the Streamlit health check explicitly.",
+    )
     args = parser.parse_args(argv)
     try:
+        headers = auth_headers(os.environ)
+        config_errors = configuration_errors(
+            os.environ,
+            headers,
+            health_only=args.health_only,
+            skip_ui=args.skip_ui,
+        )
+        if config_errors:
+            for error in config_errors:
+                print(f"Smoke configuration error: {error}.", file=sys.stderr)
+            return 2
         base_url = normalize_base_url(args.base_url)
-        return run_smoke(base_url, auth_headers(os.environ), health_only=args.health_only)
+        ui_base_url = "" if args.skip_ui else normalize_base_url(args.ui_base_url)
+        return run_smoke(
+            base_url,
+            headers,
+            health_only=args.health_only,
+            expected_tenant=expected_tenant_id(os.environ, headers),
+            ui_base_url=ui_base_url,
+            skip_ui=args.skip_ui,
+        )
     except Exception as exc:
         print(f"Smoke test failed: {redact(exc)}", file=sys.stderr)
         return 2

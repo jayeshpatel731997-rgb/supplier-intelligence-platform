@@ -127,6 +127,18 @@ class TenantRepository:
         self.session.flush()
         return row
 
+    def ensure_demo_oidc_membership(self, username: str, role: str = "risk_manager") -> None:
+        seed_username = username.strip()
+        if not seed_username:
+            raise ValueError("OIDC staging seed username is required.")
+        self._ensure_demo_foundation()
+        self.session.execute(
+            update(TenantApiKey)
+            .where(TenantApiKey.tenant_id == DEMO_TENANT_ID)
+            .values(is_active=False)
+        )
+        self.create_membership(DEMO_TENANT_ID, seed_username, role)
+
     def ensure_demo_seed(
         self,
         *,
@@ -137,12 +149,7 @@ class TenantRepository:
     ) -> TenantSeedResult:
         seed_key = raw_key or DEMO_API_KEY
         seed_username = username or DEMO_PLATFORM_ADMIN
-        self.create_tenant(DEMO_TENANT_ID, "Demo Tenant")
-        if not self.list_memberships(DEMO_TENANT_ID):
-            self.create_organization(DEMO_TENANT_ID, "Demo Organization", "demo.local")
-            self.create_retention_policy(DEMO_TENANT_ID, "audit_logs", 2555)
-            self.create_retention_policy(DEMO_TENANT_ID, "news_events", 90)
-            self.create_backup_run(DEMO_TENANT_ID, status="configured", location="local-demo")
+        self._ensure_demo_foundation()
         if revoke_usernames:
             self.session.execute(
                 update(TenantApiKey)
@@ -169,6 +176,14 @@ class TenantRepository:
                 raw_key=seed_key,
             )
         return TenantSeedResult(tenant_id=DEMO_TENANT_ID, api_key=seed_key)
+
+    def _ensure_demo_foundation(self) -> None:
+        self.create_tenant(DEMO_TENANT_ID, "Demo Tenant")
+        if not self.list_memberships(DEMO_TENANT_ID):
+            self.create_organization(DEMO_TENANT_ID, "Demo Organization", "demo.local")
+            self.create_retention_policy(DEMO_TENANT_ID, "audit_logs", 2555)
+            self.create_retention_policy(DEMO_TENANT_ID, "news_events", 90)
+            self.create_backup_run(DEMO_TENANT_ID, status="configured", location="local-demo")
 
     @staticmethod
     def tenant_to_dict(row: Tenant) -> dict:

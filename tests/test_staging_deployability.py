@@ -174,6 +174,60 @@ def test_staging_seed_creates_explicit_key_for_existing_demo_tenant(monkeypatch,
     assert legacy_context is None
 
 
+def test_staging_oidc_seed_creates_membership_without_api_key(monkeypatch, tmp_path):
+    from scripts.seed_demo_data import seed_demo_data
+    from src.config import Settings
+    from src.database import create_session_factory, init_database
+    from src.repositories.tenants import TenantRepository
+
+    database_url = f"sqlite:///{tmp_path / 'staging-oidc.db'}"
+    settings = Settings(
+        deployment_mode="render-staging",
+        demo_mode=False,
+        auth_provider="oidc",
+        database_url=database_url,
+    )
+    factory = create_session_factory(settings)
+    init_database(factory)
+    with factory() as session:
+        TenantRepository(session).ensure_demo_seed()
+        session.commit()
+    monkeypatch.setenv("SUPPLIER_STAGING_SEED_USERNAME", "risk.manager@example.test")
+    monkeypatch.delenv("SUPPLIER_DEMO_API_KEY", raising=False)
+
+    first = seed_demo_data(session_factory=factory, tenant_id="demo-tenant", settings=settings)
+    second = seed_demo_data(session_factory=factory, tenant_id="demo-tenant", settings=settings)
+
+    assert second["weak_signals"] == first["weak_signals"]
+    with factory() as session:
+        repo = TenantRepository(session)
+        membership = repo.get_membership("demo-tenant", "risk.manager@example.test")
+        assert membership is not None
+        assert membership.role == "risk_manager"
+        assert repo.validate_api_key("demo-tenant", "demo-api-key") is None
+
+
+def test_staging_oidc_seed_requires_explicit_membership_identity(monkeypatch, tmp_path):
+    import pytest
+
+    from scripts.seed_demo_data import seed_demo_data
+    from src.config import Settings
+    from src.database import create_session_factory, init_database
+
+    settings = Settings(
+        deployment_mode="render-staging",
+        demo_mode=False,
+        auth_provider="oidc",
+        database_url=f"sqlite:///{tmp_path / 'staging-oidc-missing-user.db'}",
+    )
+    factory = create_session_factory(settings)
+    init_database(factory)
+    monkeypatch.delenv("SUPPLIER_STAGING_SEED_USERNAME", raising=False)
+
+    with pytest.raises(RuntimeError, match="SUPPLIER_STAGING_SEED_USERNAME"):
+        seed_demo_data(session_factory=factory, tenant_id="demo-tenant", settings=settings)
+
+
 def test_demo_seed_rejects_custom_tenant(monkeypatch, tmp_path):
     import pytest
 
@@ -205,6 +259,10 @@ def test_smoke_script_exercises_evidence_workflow(monkeypatch):
         payloads[path] = payload
         if path == "/suppliers" and method == "GET" and not headers:
             return smoke.SmokeResponse(401, json.dumps({"detail": "auth required"}), "application/json")
+        if path == "/system/status":
+            if headers and headers.get("X-Tenant-ID") == "cross-tenant-smoke-probe":
+                return smoke.SmokeResponse(403, json.dumps({"detail": "invalid tenant"}), "application/json")
+            return smoke.SmokeResponse(200, json.dumps({"tenant_id": "demo-tenant"}), "application/json")
         if path == "/evidence/runs" and method == "POST":
             return smoke.SmokeResponse(
                 200,
@@ -257,6 +315,10 @@ def test_smoke_script_fails_when_connector_workflow_reports_failure(monkeypatch)
             return smoke.SmokeResponse(401, json.dumps({"detail": "auth required"}), "application/json")
         if path == "/suppliers":
             return smoke.SmokeResponse(200, json.dumps([]), "application/json")
+        if path == "/system/status":
+            if headers and headers.get("X-Tenant-ID") == "cross-tenant-smoke-probe":
+                return smoke.SmokeResponse(403, json.dumps({"detail": "invalid tenant"}), "application/json")
+            return smoke.SmokeResponse(200, json.dumps({"tenant_id": "demo-tenant"}), "application/json")
         if path == "/evidence/connectors/news/sync":
             return smoke.SmokeResponse(
                 200,
@@ -338,6 +400,10 @@ def test_smoke_allows_visible_public_connector_degradation(monkeypatch):
                 json.dumps({"status": "ready", "connectors": {"mode": "public"}}),
                 "application/json",
             )
+        if path == "/system/status":
+            if headers and headers.get("X-Tenant-ID") == "cross-tenant-smoke-probe":
+                return smoke.SmokeResponse(403, json.dumps({"detail": "invalid tenant"}), "application/json")
+            return smoke.SmokeResponse(200, json.dumps({"tenant_id": "demo-tenant"}), "application/json")
         if path == "/evidence/connectors/news/sync":
             return smoke.SmokeResponse(
                 200,

@@ -80,6 +80,20 @@ def test_render_blueprints_keep_api_and_ui_services_separate():
         assert "healthCheckPath: /_stcore/health" in text
 
 
+def test_render_runbook_matches_blueprint_auth_and_resource_truth():
+    blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
+    runbook = (ROOT / "RENDER_STAGING_RUNBOOK.md").read_text(encoding="utf-8")
+
+    assert "name: supplier-intelligence-api" in blueprint
+    assert "name: supplier-intelligence-ui" in blueprint
+    assert "name: supplier-intelligence-postgres" in blueprint
+    assert "API + Streamlit + Postgres" in runbook
+    assert "does not generate" in runbook
+    assert "`SUPPLIER_DEMO_API_KEY`" in runbook
+    assert "STAGING_BEARER_TOKEN" in runbook
+    assert "STAGING_UI_BASE_URL" in runbook
+
+
 def test_smoke_script_redacts_secret_like_values():
     import scripts.smoke_staging as smoke
 
@@ -89,6 +103,36 @@ def test_smoke_script_redacts_secret_like_values():
     assert "secret-key" not in text
     assert "user:pass" not in text
     assert "***" in text
+
+
+def test_smoke_script_redacts_cookie_and_client_secret_values():
+    import scripts.smoke_staging as smoke
+
+    text = smoke.redact("Cookie: session=private-value client_secret=private-client-value")
+
+    assert "private-value" not in text
+    assert "private-client-value" not in text
+    assert "***" in text
+
+
+def test_smoke_script_summaries_omit_database_urls_and_evidence_payloads():
+    import scripts.smoke_staging as smoke
+
+    response = smoke.SmokeResponse(
+        200,
+        (
+            '{"status":"completed","run_id":"run-1","database":'
+            '{"ok":true,"driver":"postgresql+psycopg","url":"postgresql://hidden"},'
+            '"suppliers":[{"supplier_name":"Confidential Supplier"}]}'
+        ),
+        "application/json",
+    )
+
+    summary = smoke._json_summary(response)
+
+    assert "run-1" in summary
+    assert "postgresql://hidden" not in summary
+    assert "Confidential Supplier" not in summary
 
 
 def test_smoke_script_builds_auth_headers_without_printing_values(monkeypatch):
@@ -101,6 +145,66 @@ def test_smoke_script_builds_auth_headers_without_printing_values(monkeypatch):
     headers = smoke.auth_headers(os.environ)
 
     assert headers == {"X-Tenant-ID": "tenant-a", "X-API-Key": "api-key-value"}
+
+
+def test_smoke_script_prefers_staging_api_base_url_alias():
+    import scripts.smoke_staging as smoke
+
+    assert (
+        smoke.staging_base_url(
+            {
+                "STAGING_API_BASE_URL": "https://api.example.test",
+                "STAGING_BASE_URL": "https://legacy.example.test",
+            }
+        )
+        == "https://api.example.test"
+    )
+    assert smoke.staging_base_url({"STAGING_BASE_URL": "https://legacy.example.test"}) == "https://legacy.example.test"
+
+
+def test_smoke_script_preflight_requires_oidc_tenant_and_ui_urls():
+    import scripts.smoke_staging as smoke
+
+    env = {
+        "STAGING_API_BASE_URL": "https://api.example.test",
+        "STAGING_BEARER_TOKEN": "not-printed",
+    }
+    headers = smoke.auth_headers(env)
+
+    errors = smoke.configuration_errors(env, headers, health_only=False, skip_ui=False)
+
+    assert any("STAGING_EXPECTED_TENANT_ID" in error for error in errors)
+    assert any("STAGING_UI_BASE_URL" in error for error in errors)
+    assert all("not-printed" not in error for error in errors)
+
+
+def test_smoke_script_checks_oidc_tenant_header_override(monkeypatch):
+    import scripts.smoke_staging as smoke
+
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_request(base_url, path, headers=None, timeout=10, method="GET", payload=None):
+        del base_url, timeout, method, payload
+        active_headers = dict(headers or {})
+        calls.append((path, active_headers))
+        if path == "/system/status":
+            return smoke.SmokeResponse(
+                200,
+                '{"tenant_id":"tenant-a","status":"ok"}',
+                "application/json",
+            )
+        return smoke.SmokeResponse(200, "{}", "application/json")
+
+    monkeypatch.setattr(smoke, "request_json", fake_request)
+
+    checks = smoke._tenant_isolation_checks(
+        "https://api.example.test/",
+        {"Authorization": "Bearer hidden"},
+        "tenant-a",
+    )
+
+    assert all(ok for _name, ok, _detail in checks)
+    assert any(headers.get("X-Tenant-ID") == "cross-tenant-smoke-probe" for _path, headers in calls)
 
 
 def test_smoke_script_rejects_streamlit_html_fallback(monkeypatch):

@@ -137,18 +137,21 @@ SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY=<secret-access-key>
 After Render deploys, run the smoke test locally:
 
 ```bash
-set STAGING_BASE_URL=https://supplier-intelligence-api.onrender.com
-set STAGING_TENANT_ID=demo-tenant
-set STAGING_API_KEY=<tenant-api-key>
+set STAGING_API_BASE_URL=https://supplier-intelligence-api.onrender.com
+set STAGING_UI_BASE_URL=https://supplier-intelligence-ui.onrender.com
+set STAGING_BEARER_TOKEN=<short-lived-oidc-token>
+set STAGING_EXPECTED_TENANT_ID=demo-tenant
 python scripts/smoke_staging.py
 ```
 
-`STAGING_BASE_URL` must be the `supplier-intelligence-api` URL. If it points to
+`STAGING_API_BASE_URL` must be the `supplier-intelligence-api` URL.
+`STAGING_BASE_URL` remains a compatible alias. If either points to
 `supplier-intelligence-ui`, Streamlit can serve `200 text/html` for API-like
 paths; the smoke test treats that as a failed deployment target.
-The default smoke requires staging credentials and fails when they are absent.
-Use `python scripts/smoke_staging.py --health-only` only when intentionally
-checking public health endpoints and auth rejection without the evidence workflow.
+The default smoke requires staging credentials, the expected tenant, and the
+Streamlit URL. Use `python scripts/smoke_staging.py --health-only --skip-ui`
+only when intentionally checking public API health and auth rejection without
+the authenticated evidence workflow or Streamlit surface.
 
 For an authenticated read check, add either:
 
@@ -167,16 +170,13 @@ Seed deterministic demo data before workflow smoke checks:
 
 ```bash
 python scripts/migrate.py
-set SUPPLIER_DEMO_API_KEY=<non-default-staging-secret>
+set SUPPLIER_STAGING_SEED_USERNAME=<oidc-subject-or-verified-email>
 python scripts/seed_demo_data.py --tenant-id demo-tenant
 ```
 
-Staging/production deployment modes reject the public `demo-api-key` default.
 The seed command does not create staging schema; Alembic migrations must succeed
-first.
-The staging seed creates a `risk_manager` credential rather than a platform
-administrator credential. Use the same explicit value as `STAGING_API_KEY`
-when running the local smoke client against that seeded tenant.
+first. In OIDC mode the staging seed creates a `risk_manager` membership for the
+configured token subject or verified email and does not create an API key.
 
 The smoke test checks `/live`, `/health`, `/ready`, verifies `/suppliers`
 rejects missing auth, verifies health endpoints return API JSON instead of
@@ -223,11 +223,23 @@ signals; the connector currently maps material 8-K/6-K and late-filing notices.
 
 ## Postgres Configuration
 
-Set:
+Set one managed Postgres connection URL:
 
 ```bash
 SUPPLIER_DATABASE_URL=postgresql+psycopg://supplier_app:<password>@<host>:5432/supplier_intelligence
 ```
+
+Provider notes:
+
+- **Render Postgres:** inject the database `connectionString` into
+  `SUPPLIER_DATABASE_URL`, as shown in `render.yaml`. A `postgresql://` URL is
+  normalized to the Psycopg SQLAlchemy driver.
+- **Neon:** copy the pooled connection string into the hosting provider's
+  secret store. Keep `sslmode=require`; do not put the URL in Git, shell
+  history, screenshots, or logs.
+- **Supabase:** use the direct Postgres connection or the transaction/session
+  pooler URL appropriate for the service's connection lifetime. Require TLS and
+  keep the password only in the deployment secret store.
 
 Production mode does not create or mutate schema at API/worker startup. Run
 Alembic before starting production services:
@@ -237,6 +249,31 @@ python scripts/migrate.py
 python scripts/validate_tenant_schema.py
 ```
 
+Run these commands only after verifying that the URL targets the intended
+disposable or staging database:
+
+```powershell
+$env:SUPPLIER_SECURITY_MODE="production"
+$env:SUPPLIER_DEPLOYMENT_MODE="staging"
+$env:SUPPLIER_DEMO_MODE="false"
+$env:SUPPLIER_DATABASE_URL="<secret from Render, Neon, or Supabase>"
+.\venv\Scripts\python.exe scripts\migrate.py
+.\venv\Scripts\python.exe scripts\validate_tenant_schema.py
+```
+
+For an approved seeded OIDC staging tenant, set the subject or verified email
+that will be present in the bearer token and run the seed twice to prove
+idempotency:
+
+```powershell
+$env:AUTH_PROVIDER="oidc"
+$env:SUPPLIER_STAGING_SEED_USERNAME="<oidc-subject-or-verified-email>"
+.\venv\Scripts\python.exe scripts\seed_demo_data.py --tenant-id demo-tenant
+.\venv\Scripts\python.exe scripts\seed_demo_data.py --tenant-id demo-tenant
+```
+
+Do not run these mutating commands against production.
+
 Local/demo mode still supports the SQLAlchemy `create_all()` fallback for SQLite
 developer demos.
 
@@ -244,6 +281,20 @@ developer demos.
 `SUPPLIER_DATABASE_URL`/`DATABASE_URL`, when the URL is invalid, when SQLite is
 used for staging/production, or when `--create-all-fallback` is attempted in
 staging/production.
+
+### Manual Managed Postgres Checklist
+
+1. Create an empty staging database or isolated staging project.
+2. Restrict network access and create a least-privilege application role.
+3. Store `SUPPLIER_DATABASE_URL` in the provider or deployment secret manager.
+4. Confirm the hostname and database name out of band before migration.
+5. Take or verify a provider snapshot, branch, or backup.
+6. Run migration and tenant-schema validation.
+7. Run the seed twice only when a seeded demo tenant is approved.
+8. Deploy API and Streamlit with `SUPPLIER_API_BASE_URL` pointing to the API.
+9. Set `STAGING_API_BASE_URL`, `STAGING_UI_BASE_URL`, a short-lived bearer
+   token, and `STAGING_EXPECTED_TENANT_ID`; then run the authenticated smoke.
+10. Record revision, sanitized output, backup identifier, and rollback owner.
 
 ## NewsAPI / Anthropic / OpenAI
 
@@ -259,6 +310,18 @@ ANTHROPIC_API_KEY=...
 ```
 
 If keys are missing or an API fails, Sentinel returns a safe error, records an alert, and does not crash the app.
+
+Supplier evidence narratives remain deterministic by default:
+
+```bash
+SUPPLIER_LLM_NARRATIVE_PROVIDER=none
+```
+
+`openai` and `anthropic` are future governed modes. Before enabling either,
+require evidence-only structured inputs, output schema validation,
+claim-to-evidence traceability, tenant-safe logging, evaluation cases,
+deterministic fallback, and provider retention review. Current readiness reports
+those modes as `interface_only`; do not treat them as live integrations.
 
 ## Upload Safety And Storage
 
@@ -327,6 +390,10 @@ an active local membership for the token subject/email in the claimed tenant.
 Create or sync tenants and memberships before switching production traffic to
 `AUTH_PROVIDER=oidc`.
 
+This OIDC path currently protects FastAPI. Streamlit still uses the pilot/local
+login and does not implement a browser OIDC callback, so UI SSO remains a
+real-world staging gap.
+
 ## Alembic
 
 An Alembic initial metadata migration is included. Local/demo mode still supports automatic table creation for SQLite compatibility.
@@ -347,6 +414,26 @@ Celery-ready worker:
 ```bash
 docker compose --profile celery up --build celery-worker
 ```
+
+Redis/Celery is optional for the first staging gate. Keep `WORKER_MODE=local`
+and scheduling disabled for the API + Streamlit + Postgres phase. Promote to
+`WORKER_MODE=celery` with `REDIS_URL` only after Redis connectivity, worker
+health, retry behavior, tenant-scoped jobs, and cron ownership are tested.
+
+## Staging Observability Plan
+
+Sentry and PostHog are optional integrations, not current staging blockers.
+
+- Sentry: capture unhandled API/worker exceptions with environment and release
+  tags; redact headers, tokens, database URLs, supplier payloads, and
+  tenant-sensitive data before transport.
+- PostHog: capture coarse product events only after consent and data-governance
+  review; do not send supplier names, evidence text, credentials, or raw audit
+  details.
+- Keep application logs and `/ready` useful without either service. Missing
+  observability credentials must never crash startup.
+- Before rollout, define secret-manager variables, sampling rules, retention
+  owners, deletion procedures, and a redaction test.
 
 ## Rollback Notes
 
