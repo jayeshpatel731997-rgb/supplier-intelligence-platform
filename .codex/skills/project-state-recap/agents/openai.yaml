@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project State Recap"
+  short_description: "Summarize verified repository state and next work"
+  default_prompt: "Use $project-state-recap to summarize the current repository state from docs, tests, and Git evidence."

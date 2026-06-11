@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deployment Readiness"
+  short_description: "Assess Supplier Platform deployment readiness"
+  default_prompt: "Use $deployment-readiness to assess this branch for a safe staging deployment."

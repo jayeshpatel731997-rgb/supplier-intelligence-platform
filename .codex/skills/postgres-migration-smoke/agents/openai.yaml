@@ -1,0 +1,4 @@
+interface:
+  display_name: "Postgres Migration Smoke"
+  short_description: "Verify managed Postgres migrations and staging"
+  default_prompt: "Use $postgres-migration-smoke to review migrations, seed idempotency, rollback notes, and staging smoke tests."
