@@ -4,9 +4,17 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  quality:
     runs-on: windows-latest
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository
@@ -16,21 +24,38 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff
+
+      - name: Verify dependency consistency
+        run: python -m pip check
 
       - name: Compile Python files
-        run: |
-          python -m compileall app.py data_ingestion.py news_intelligence.py models agents tests
+        run: python -m compileall -q app.py backend src agents models scripts tests data_ingestion.py news_intelligence.py pilot_security.py
 
-      - name: Run tests
-        run: |
-          python -m unittest discover -s tests -t . -v
+      - name: Run full test suite
+        run: python -m pytest -q
+
+      - name: Scan tracked files for leaked secrets
+        run: python scripts/check_secret_leakage.py
 
       - name: Run Ruff
-        run: |
-          ruff check .
+        run: ruff check .
+
+  deployment-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
+      - name: Validate Render startup scripts
+        run: bash -n scripts/start_api_render.sh scripts/start_ui_render.sh

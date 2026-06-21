@@ -1,6 +1,19 @@
 # Production Readiness
 
-## Now Production-Architecture Ready
+## Current Decision: Conditional Go For Managed Staging
+
+The repository has a production-oriented architecture and automated release
+gates, but it is not an unconditional production go-live. A real deployment
+still depends on external identity, managed Postgres, object storage, secret
+management, observability, and recovery evidence that cannot be proven from the
+repository alone.
+
+GitHub CI now runs the complete pytest suite, dependency consistency checks,
+Python compilation, Ruff, the tracked-file secret leakage scan, Docker Compose
+configuration rendering, and Render startup-script syntax checks. A green CI
+run is required before promotion.
+
+## Production-Oriented Foundation
 
 The project now has a real production foundation beside the existing Streamlit app:
 
@@ -37,11 +50,11 @@ The project now has a real production foundation beside the existing Streamlit a
 - Docker Compose stack
 - Pytest coverage for API, ingestion, Sentinel failure handling, alerts, jobs, OIDC token validation, auth, deployment readiness, and decision fallback
 
-## Still Pilot/Internal-Company Ready, Not Enterprise SaaS
+## Production Go-Live Blockers
 
 The hardening phase now adds migration/backfill tooling, Celery/Redis-ready worker structure, auth-provider scaffolding, rate limiting, secrets/KMS abstractions, backup/restore scripts, audit export readiness, compliance evidence stubs, and load testing.
 
-Before selling as a real enterprise SaaS product, still add:
+Before approving a production go-live, complete and capture evidence for:
 
 - Real IdP setup, tenant membership sync, and OIDC/SAML operational rollout
 - Real MFA enforcement at the identity provider
@@ -67,8 +80,17 @@ Streamlit remains the internal command center, not the only production runtime. 
 
 ## Verification Commands
 
-```bash
-python -m compileall .
-python -m pytest -v
-python -m ruff check .
+```powershell
+.\venv\Scripts\python.exe -m compileall -q app.py backend src agents models scripts tests data_ingestion.py news_intelligence.py pilot_security.py
+.\venv\Scripts\python.exe -m pytest -q
+.\venv\Scripts\python.exe scripts\check_secret_leakage.py
+.\venv\Scripts\ruff.exe check .
+docker compose config --quiet
+bash -n scripts/start_api_render.sh scripts/start_ui_render.sh
 ```
+
+If Docker is unavailable locally, the GitHub `deployment-config` job remains the
+required Compose validation gate. Managed-service smoke tests, migrations,
+seeding, and recovery drills must target an explicitly approved disposable or
+staging environment; they must never be pointed at production as a release
+experiment.
