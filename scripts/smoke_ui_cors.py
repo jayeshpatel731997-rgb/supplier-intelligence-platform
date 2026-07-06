@@ -55,13 +55,24 @@ def normalize_url(value: str) -> str:
     return value.rstrip("/") + "/"
 
 
-def _request(url: str, *, headers: Mapping[str, str] | None = None, timeout: int = 15) -> tuple[int, str, str]:
-    request = Request(url, headers=dict(headers or {}), method="GET")
+def _request(
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    timeout: int = 15,
+    method: str = "GET",
+) -> tuple[int, str, str, dict[str, str]]:
+    request = Request(url, headers=dict(headers or {}), method=method)
     try:
         with urlopen(request, timeout=timeout) as response:
-            return response.status, response.headers.get("Content-Type", ""), response.read().decode("utf-8", errors="replace")
+            return (
+                response.status,
+                response.headers.get("Content-Type", ""),
+                response.read().decode("utf-8", errors="replace"),
+                dict(response.headers),
+            )
     except HTTPError as exc:
-        return exc.code, exc.headers.get("Content-Type", ""), exc.read().decode("utf-8", errors="replace")
+        return exc.code, exc.headers.get("Content-Type", ""), exc.read().decode("utf-8", errors="replace"), dict(exc.headers)
 
 
 def _json_payload(body: str) -> object | None:
@@ -101,7 +112,7 @@ def run_ui_cors_smoke(env: Mapping[str, str]) -> list[UiCorsResult]:
     try:
         ui_base = normalize_url(ui_url)
         api_base = normalize_url(api_url)
-        ui_status, ui_content_type, ui_body = _request(ui_base)
+        ui_status, ui_content_type, ui_body, _ui_headers = _request(ui_base)
         ui_usable = ui_status == 200 and bool(ui_body.strip())
         results.append(
             UiCorsResult(
@@ -111,7 +122,7 @@ def run_ui_cors_smoke(env: Mapping[str, str]) -> list[UiCorsResult]:
             )
         )
 
-        health_status, health_content_type, health_body = _request(urljoin(api_base, "health"))
+        health_status, health_content_type, health_body, _health_headers = _request(urljoin(api_base, "health"))
         health_payload = _json_payload(health_body)
         health_ok = health_status == 200 and isinstance(health_payload, dict) and health_payload.get("status") == "ok"
         results.append(
@@ -122,7 +133,7 @@ def run_ui_cors_smoke(env: Mapping[str, str]) -> list[UiCorsResult]:
             )
         )
 
-        ready_status, ready_content_type, ready_body = _request(urljoin(api_base, "ready"))
+        ready_status, ready_content_type, ready_body, _ready_headers = _request(urljoin(api_base, "ready"))
         ready_payload = _json_payload(ready_body)
         ready_structured = ready_status in {200, 503} and isinstance(ready_payload, dict) and "status" in ready_payload
         results.append(
@@ -130,6 +141,23 @@ def run_ui_cors_smoke(env: Mapping[str, str]) -> list[UiCorsResult]:
                 "staging_api_ready_structure",
                 "PASS" if ready_structured else "FAIL",
                 f"HTTP {ready_status}; content_type={ready_content_type}; payload={_api_summary(ready_payload)}",
+            )
+        )
+        cors_status, _cors_content_type, _cors_body, cors_headers = _request(
+            urljoin(api_base, "health"),
+            method="OPTIONS",
+            headers={
+                "Origin": ui_base.rstrip("/"),
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        allowed_origin = cors_headers.get("Access-Control-Allow-Origin", "")
+        cors_ok = cors_status in {200, 204} and allowed_origin == ui_base.rstrip("/")
+        results.append(
+            UiCorsResult(
+                "staging_api_cors_preflight",
+                "PASS" if cors_ok else "WARN",
+                f"HTTP {cors_status}; allow_origin_matches_ui={allowed_origin == ui_base.rstrip('/')}",
             )
         )
     except (ValueError, URLError, TimeoutError) as exc:

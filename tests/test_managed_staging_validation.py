@@ -133,3 +133,28 @@ def test_supabase_live_storage_check_uploads_verifies_and_deletes_when_approved(
     assert "malware scanning remains a separate control" in results[0].detail
     assert [method for method, _path in calls] == ["POST", "GET", "DELETE"]
     assert all("supplier-uploads-quarantine-staging" in path for _method, path in calls)
+
+
+def test_expected_degraded_ready_is_recorded_as_pass(monkeypatch):
+    import scripts.validate_managed_staging as validator
+
+    def fake_request_json(base_url, path, headers=None, timeout=10):
+        del base_url, headers, timeout
+        if path == "/ready":
+            return 503, {"status": "degraded", "production_issues": ["OIDC missing"]}, {}
+        if path == "/suppliers":
+            return 401, {"detail": "auth required"}, {}
+        return 200, {"status": "ok"}, {}
+
+    monkeypatch.setattr(validator, "_request_json", fake_request_json)
+
+    results = run_validation(
+        {
+            "STAGING_API_URL": "https://supplier-intelligence-api-hut2.onrender.com",
+            "STAGING_READY_DEGRADED_EXPECTED": "true",
+        }
+    )
+
+    ready = next(result for result in results if result.name == "staging_api_ready")
+    assert ready.status == "PASS"
+    assert "degraded_expected=True" in ready.detail

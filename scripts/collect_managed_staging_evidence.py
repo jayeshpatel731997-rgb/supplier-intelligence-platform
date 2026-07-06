@@ -147,6 +147,8 @@ def main() -> int:
                 ),
             }
         )
+    if os.getenv("STAGING_READY_DEGRADED_EXPECTED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        managed_env["STAGING_READY_DEGRADED_EXPECTED"] = "true"
     results.append(
         run_command(
             "managed_staging_validation",
@@ -276,7 +278,7 @@ def main() -> int:
             "- Managed Postgres backup/restore drill against an approved staging or disposable target.",
             "- Real IdP/MFA/tenant sync and Streamlit browser OIDC callback validation.",
             "- Managed object storage live checks, real scanner/quarantine service, managed secrets/KMS, log drains, metrics, and alerting.",
-            "- UI/CORS smoke evidence after resuming supplier-intelligence-ui-hut2 and setting CORS_ALLOW_ORIGINS to the trusted UI origin.",
+            "- Browser screenshots and authenticated UI/OIDC flow evidence.",
             "",
             "## Failures",
             "",

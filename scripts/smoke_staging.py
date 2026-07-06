@@ -196,6 +196,17 @@ def _api_json_check(name: str, response: SmokeResponse, expected_status: int = 2
     return (name, True, f"HTTP {response.status} {_json_summary(response)}".strip())
 
 
+def _ready_json_check(response: SmokeResponse, *, degraded_expected: bool = False) -> tuple[str, bool, str]:
+    if degraded_expected and response.status == 503:
+        if _looks_like_html(response):
+            return ("/ready", False, f"HTTP {response.status} {response.content_type}; got HTML instead of FastAPI JSON")
+        payload = _json_payload(response)
+        if isinstance(payload, dict) and payload.get("status") == "degraded":
+            return ("/ready", True, f"HTTP {response.status} expected degraded {_json_summary(response)}".strip())
+        return ("/ready", False, f"HTTP {response.status}; expected structured degraded readiness JSON")
+    return _api_json_check("/ready", response)
+
+
 def _protected_route_check(response: SmokeResponse) -> tuple[str, bool, str]:
     if response.status in {401, 403}:
         return ("/suppliers without auth", True, f"HTTP {response.status} {_json_summary(response)}".strip())
@@ -359,6 +370,7 @@ def run_smoke(
     expected_tenant: str = "",
     ui_base_url: str = "",
     skip_ui: bool = True,
+    ready_degraded_expected: bool = False,
 ) -> int:
     checks: list[tuple[str, bool, str]] = []
 
@@ -369,7 +381,7 @@ def run_smoke(
     checks.append(_api_json_check("/health", health))
 
     ready = request_json(base_url, "/ready")
-    checks.append(_api_json_check("/ready", ready))
+    checks.append(_ready_json_check(ready, degraded_expected=ready_degraded_expected))
     ready_payload = _json_payload(ready)
     connector_mode = ""
     if isinstance(ready_payload, dict):
@@ -445,6 +457,8 @@ def main(argv: list[str] | None = None) -> int:
             expected_tenant=expected_tenant_id(os.environ, headers),
             ui_base_url=ui_base_url,
             skip_ui=args.skip_ui,
+            ready_degraded_expected=os.environ.get("STAGING_READY_DEGRADED_EXPECTED", "").strip().lower()
+            in {"1", "true", "yes", "on"},
         )
     except Exception as exc:
         print(f"Smoke test failed: {redact(exc)}", file=sys.stderr)

@@ -44,6 +44,12 @@ Capture screenshots or exported logs for:
 - Log drain or alert-routing plan, including owner and escalation target.
 - Rollback proof showing the previous known-good deploy can be selected.
 
+Current observed live-log evidence:
+
+- Render API live logs showed repeated `GET /live` requests returning `200 OK`.
+- Treat an older Render "recent deploy failed" banner as historical unless the
+  current `/health`, `/ready`, or live logs fail.
+
 ## Staging Smoke Checklist
 
 1. Confirm commit SHA and branch.
@@ -52,6 +58,11 @@ Capture screenshots or exported logs for:
 4. Set API `CORS_ALLOW_ORIGINS` to
    `https://supplier-intelligence-ui-hut2.onrender.com` and redeploy the API.
 5. Run `scripts/smoke_ui_cors.py` with `STAGING_UI_URL` and `STAGING_API_URL`.
+   Current live URLs:
+   - `STAGING_UI_URL=https://supplier-intelligence-ui-hut2.onrender.com`
+   - `STAGING_API_URL=https://supplier-intelligence-api-hut2.onrender.com`
+   Treat `staging_api_cors_preflight=WARN` as a remaining CORS configuration
+   gap even when the UI page and API health/readiness checks pass.
 6. Run `scripts/smoke_staging.py` with a short-lived OIDC token.
 7. Run `scripts/validate_managed_staging.py` with `STAGING_API_URL`,
    `STAGING_API_TOKEN`, `STAGING_EXPECTED_TENANT_ID`, and any approved Postgres,

@@ -125,11 +125,18 @@ def validate_api(env: Mapping[str, str]) -> list[ValidationResult]:
             )
         )
         ready_status, ready_payload, _ready_headers = _request_json(base_url, "/ready")
+        degraded_expected = _bool_env(env, "STAGING_READY_DEGRADED_EXPECTED")
+        ready_passed = ready_status == 200 or (
+            degraded_expected
+            and ready_status == 503
+            and isinstance(ready_payload, dict)
+            and ready_payload.get("status") == "degraded"
+        )
         results.append(
             ValidationResult(
                 "staging_api_ready",
-                "PASS" if ready_status == 200 else "FAIL",
-                f"HTTP {ready_status}; payload={ready_payload}",
+                "PASS" if ready_passed else "FAIL",
+                f"HTTP {ready_status}; degraded_expected={degraded_expected}; payload={ready_payload}",
             )
         )
         unauth_status, unauth_payload, _unauth_headers = _request_json(base_url, "/suppliers")

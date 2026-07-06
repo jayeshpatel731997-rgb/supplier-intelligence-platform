@@ -1,0 +1,6 @@
+PASS /live: HTTP 200 {'status': 'alive'}
+PASS /health: HTTP 200 {'status': 'ok', 'database': {'ok': True, 'driver': 'postgresql+psycopg'}, 'api': {'ok': True, 'status': 'ready'}}
+PASS /ready: HTTP 503 expected degraded {'status': 'degraded', 'database': {'ok': True, 'driver': 'postgresql+psycopg'}, 'api': {'ok': True, 'status': 'ready'}, 'production_issue_count': 5}
+PASS /suppliers without auth: HTTP 401 {}
+PASS Streamlit surface: skipped by explicit --skip-ui option
+PASS authenticated workflow: skipped by explicit --health-only option

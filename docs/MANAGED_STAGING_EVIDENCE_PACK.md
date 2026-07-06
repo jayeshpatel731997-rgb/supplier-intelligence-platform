@@ -95,6 +95,25 @@ be captured separately before claiming external controls are validated.
 
 Current milestone language:
 
-**Staging API live with Supabase Postgres validated; overall readiness still
-degraded pending OIDC, CORS, storage readiness, scanner, backup/restore, and
-observability.**
+**Staging API live with Supabase Postgres validated; UI/CORS and remaining
+production controls pending.**
+
+## Current Live UI/API Evidence Slice
+
+The live Render UI/API smoke for `supplier-intelligence-ui-hut2` and
+`supplier-intelligence-api-hut2` proves:
+
+- UI endpoint returns HTTP 200 / usable page.
+- API `/health` returns HTTP 200.
+- API database health is OK.
+- API database driver is `postgresql+psycopg` with a Supabase pooler host.
+- API `/ready` returns structured JSON and is correctly degraded.
+- Current `/ready` issue count: `5`.
+- Render live logs showed repeated `GET /live` responses with `200 OK`.
+- Strict CORS preflight should be treated as its own evidence item. If
+  `staging_api_cors_preflight` is WARN, the UI/API endpoints are reachable but
+  CORS is not fully proven.
+
+This evidence proves the UI/API surface is reachable. It does not prove
+OIDC/Auth, tenant sync, malware scanning, backup/restore, observability,
+rollback readiness, or browser CORS until the preflight check is PASS.

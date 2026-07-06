@@ -275,6 +275,26 @@ def test_smoke_script_rejects_non_json_health_response(monkeypatch):
     assert smoke.run_smoke("https://staging.example.com/", {}) == 1
 
 
+def test_smoke_script_allows_expected_degraded_ready(monkeypatch):
+    import scripts.smoke_staging as smoke
+
+    def fake_request(_base_url, path, headers=None, timeout=10, method="GET", payload=None):
+        del headers, timeout, method, payload
+        if path == "/ready":
+            return smoke.SmokeResponse(
+                status=503,
+                body='{"status":"degraded","production_issues":["OIDC missing"]}',
+                content_type="application/json",
+            )
+        if path == "/suppliers":
+            return smoke.SmokeResponse(status=401, body='{"detail":"auth required"}', content_type="application/json")
+        return smoke.SmokeResponse(status=200, body='{"status":"ok"}', content_type="application/json")
+
+    monkeypatch.setattr(smoke, "request_json", fake_request)
+
+    assert smoke.run_smoke("https://staging.example.com/", {}, health_only=True, ready_degraded_expected=True) == 0
+
+
 def test_ui_cors_smoke_skips_without_urls():
     import scripts.smoke_ui_cors as smoke
 
@@ -289,14 +309,16 @@ def test_ui_cors_smoke_checks_ui_health_and_ready_json(monkeypatch):
 
     calls: list[str] = []
 
-    def fake_request(url, *, headers=None, timeout=15):
-        del headers, timeout
+    def fake_request(url, *, headers=None, timeout=15, method="GET"):
+        del timeout
         calls.append(url)
+        if method == "OPTIONS":
+            return 200, "", "", {"Access-Control-Allow-Origin": headers["Origin"]}
         if url.endswith("/health"):
-            return 200, "application/json", '{"status":"ok","database":{"ok":true,"driver":"postgresql+psycopg"}}'
+            return 200, "application/json", '{"status":"ok","database":{"ok":true,"driver":"postgresql+psycopg"}}', {}
         if url.endswith("/ready"):
-            return 503, "application/json", '{"status":"degraded","production_issues":["OIDC missing"]}'
-        return 200, "text/html", "<html>Supplier Intelligence Platform</html>"
+            return 503, "application/json", '{"status":"degraded","production_issues":["OIDC missing"]}', {}
+        return 200, "text/html", "<html>Supplier Intelligence Platform</html>", {}
 
     monkeypatch.setattr(smoke, "_request", fake_request)
 
@@ -308,5 +330,33 @@ def test_ui_cors_smoke_checks_ui_health_and_ready_json(monkeypatch):
     )
 
     assert all(result.status == "PASS" for result in results)
+    assert {result.name for result in results} == {
+        "staging_ui_page",
+        "staging_api_health",
+        "staging_api_ready_structure",
+        "staging_api_cors_preflight",
+    }
     assert any(url.endswith("/health") for url in calls)
     assert any(url.endswith("/ready") for url in calls)
+
+
+def test_ui_cors_smoke_warns_when_preflight_origin_is_missing(monkeypatch):
+    import scripts.smoke_ui_cors as smoke
+
+    def fake_request(url, *, headers=None, timeout=15, method="GET"):
+        del url, headers, timeout
+        if method == "OPTIONS":
+            return 200, "", "", {}
+        return 200, "application/json", '{"status":"ok"}', {}
+
+    monkeypatch.setattr(smoke, "_request", fake_request)
+
+    results = smoke.run_ui_cors_smoke(
+        {
+            "STAGING_UI_URL": "https://supplier-intelligence-ui-hut2.onrender.com",
+            "STAGING_API_URL": "https://supplier-intelligence-api-hut2.onrender.com",
+        }
+    )
+
+    cors = next(result for result in results if result.name == "staging_api_cors_preflight")
+    assert cors.status == "WARN"

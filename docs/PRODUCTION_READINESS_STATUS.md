@@ -11,6 +11,7 @@ until external controls are configured and proven.
 ## Observed Managed Staging Evidence
 
 - Render API is live.
+- Render UI is live.
 - `/health` reports `status: ok`.
 - Database health passes.
 - `/health` reported database driver `postgresql+psycopg` and API status
@@ -19,6 +20,16 @@ until external controls are configured and proven.
   `pooler.supabase.com`.
 - Current API service: `supplier-intelligence-api-hut2`.
 - Current UI service: `supplier-intelligence-ui-hut2`.
+- Live UI/API smoke passed:
+  - `staging_ui_page`: PASS
+  - `staging_api_health`: PASS
+  - `staging_api_ready_structure`: PASS
+- Strict CORS preflight evidence is currently a warning until the API response
+  echoes `Access-Control-Allow-Origin:
+  https://supplier-intelligence-ui-hut2.onrender.com`.
+- `/ready` currently returns HTTP `503` with `status: degraded` and
+  `production_issue_count=5`.
+- Render live logs showed repeated `GET /live` responses with `200 OK`.
 
 No secret values are recorded in this repository.
 
@@ -29,6 +40,8 @@ The remaining degraded readiness items are external configuration controls:
 - `CORS_ALLOW_ORIGINS` must be set to explicit trusted origins.
   - Current expected UI origin:
     `https://supplier-intelligence-ui-hut2.onrender.com`
+  - Re-run `scripts/smoke_ui_cors.py` after redeploy and confirm
+    `staging_api_cors_preflight` is PASS, not WARN.
 - OIDC configuration is missing:
   - `OIDC_ISSUER_URL`
   - `OIDC_CLIENT_ID`
@@ -75,6 +88,5 @@ observability, and backup/restore evidence.
 
 Current milestone label:
 
-**Staging API live with Supabase Postgres validated; overall readiness still
-degraded pending OIDC, CORS, storage readiness, scanner, backup/restore, and
-observability.**
+**Staging API live with Supabase Postgres validated; UI/CORS and remaining
+production controls pending.**
