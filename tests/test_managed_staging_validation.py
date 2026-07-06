@@ -27,7 +27,7 @@ def test_staging_env_aliases_prefer_new_names():
 def test_redaction_removes_secret_values():
     text = (
         "Authorization: Bearer abc.def DATABASE_URL=postgresql://user:pass@host/db "
-        "RENDER_API_KEY=render-secret"
+        "RENDER_API_KEY=render-secret SUPABASE_SERVICE_ROLE_KEY=supabase-secret"
     )
 
     redacted = redact(text)
@@ -35,6 +35,7 @@ def test_redaction_removes_secret_values():
     assert "abc.def" not in redacted
     assert "pass@host" not in redacted
     assert "render-secret" not in redacted
+    assert "supabase-secret" not in redacted
     assert "***" in redacted
 
 
@@ -60,6 +61,20 @@ def test_complete_supabase_object_storage_configuration_passes():
             "SUPABASE_EVIDENCE_BUCKET": "evidence",
             "SUPABASE_UPLOAD_QUARANTINE_BUCKET": "quarantine",
             "SUPABASE_UPLOAD_CLEAN_BUCKET": "clean",
+        }
+    )
+
+    assert any(result.name == "object_storage_config" and result.status == "PASS" for result in results)
+    assert readiness_label(results) == "Conditional go for managed staging"
+
+
+def test_legacy_storage_provider_alias_accepts_complete_supabase_config():
+    results = run_validation(
+        {
+            "STORAGE_PROVIDER": "supabase",
+            "SUPABASE_EVIDENCE_BUCKET": "supplier-evidence-staging",
+            "SUPABASE_UPLOAD_QUARANTINE_BUCKET": "supplier-uploads-quarantine-staging",
+            "SUPABASE_UPLOAD_CLEAN_BUCKET": "supplier-uploads-clean-staging",
         }
     )
 

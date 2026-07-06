@@ -68,6 +68,9 @@ accepts:
   `SUPPLIER_UPLOAD_STORAGE_PROVIDER=supabase`,
   `SUPABASE_EVIDENCE_BUCKET`, `SUPABASE_UPLOAD_QUARANTINE_BUCKET`, and
   `SUPABASE_UPLOAD_CLEAN_BUCKET`.
+  Current staging bucket names are `supplier-evidence-staging`,
+  `supplier-uploads-quarantine-staging`, and
+  `supplier-uploads-clean-staging`.
 - `STAGING_UPLOAD_SCANNER_PROVIDER` and
   `STAGING_UPLOAD_SCANNER_ENDPOINT_URL` for scanner configuration evidence.
 - `RENDER_API_KEY` and `RENDER_SERVICE_ID`/`STAGING_RENDER_API_SERVICE_ID` for
@@ -83,3 +86,9 @@ Local passing tests prove repository behavior, not managed-service readiness.
 GitHub CI proves a clean remote run for the pushed commit. Render, Postgres,
 OIDC, object storage, scanner, observability, and backup/restore evidence must
 be captured separately before claiming external controls are validated.
+
+Current milestone language:
+
+**Staging API live with Supabase Postgres validated; overall readiness still
+degraded pending OIDC, CORS, storage readiness, scanner, backup/restore, and
+observability.**

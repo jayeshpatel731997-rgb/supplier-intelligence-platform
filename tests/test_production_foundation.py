@@ -243,6 +243,47 @@ def test_invalid_numeric_environment_values_fall_back_to_defaults(monkeypatch):
     assert settings.max_upload_bytes == 5_000_000
 
 
+def test_database_url_fallback_accepts_database_url_when_supplier_url_missing(monkeypatch):
+    monkeypatch.delenv("SUPPLIER_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@db.pooler.supabase.com:5432/postgres")
+    get_settings.cache_clear()
+
+    try:
+        settings = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert settings.database_url.startswith("postgresql+psycopg://")
+    assert "db.pooler.supabase.com" in settings.database_url
+
+
+def test_supplier_database_url_takes_precedence_over_database_url(monkeypatch):
+    monkeypatch.setenv("SUPPLIER_DATABASE_URL", "postgresql://supplier:pass@supplier.pooler.supabase.com:5432/postgres")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://fallback:pass@fallback.pooler.supabase.com:5432/postgres")
+    get_settings.cache_clear()
+
+    try:
+        settings = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert "supplier.pooler.supabase.com" in settings.database_url
+    assert "fallback.pooler.supabase.com" not in settings.database_url
+
+
+def test_storage_provider_alias_supports_legacy_storage_provider_name(monkeypatch):
+    monkeypatch.delenv("SUPPLIER_UPLOAD_STORAGE_PROVIDER", raising=False)
+    monkeypatch.setenv("STORAGE_PROVIDER", "supabase")
+    get_settings.cache_clear()
+
+    try:
+        settings = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert settings.upload_storage_provider == "supabase"
+
+
 def test_production_runtime_rejects_wildcard_cors_and_incomplete_oidc():
     settings = Settings(
         security_mode="production",
@@ -259,6 +300,7 @@ def test_production_runtime_rejects_wildcard_cors_and_incomplete_oidc():
 
     assert any("CORS" in issue for issue in issues)
     assert any("OIDC_CLIENT_SECRET" in issue for issue in issues)
+    assert any("OIDC_JWKS_URL" in issue for issue in issues)
 
 
 def test_upload_storage_defaults_to_local_demo_path(tmp_path):
@@ -443,6 +485,34 @@ def test_system_status_redacts_credentials_from_startup_errors(monkeypatch):
 
     assert "super-secret-password" not in status["status_error"]
     assert "***:***@db:5432/app" in status["status_error"]
+
+
+def test_database_health_redacts_supabase_pooler_password(monkeypatch):
+    from src import database as database_module
+
+    settings = Settings(database_url="postgresql+psycopg://user:secret-password@aws-0-us-east-1.pooler.supabase.com:5432/postgres")
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _statement):
+            return None
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    monkeypatch.setattr(database_module, "create_database_engine", lambda _settings: FakeEngine())
+
+    health = database_health(settings)
+
+    assert health["ok"] is True
+    assert "secret-password" not in health["url"]
+    assert health["url"] == "postgresql+psycopg://***:***@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
 
 
 def test_tenant_schema_validation_fails_when_business_tables_are_missing(tmp_path):

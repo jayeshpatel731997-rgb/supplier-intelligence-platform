@@ -13,8 +13,12 @@ until external controls are configured and proven.
 - Render API is live.
 - `/health` reports `status: ok`.
 - Database health passes.
+- `/health` reported database driver `postgresql+psycopg` and API status
+  `ready`.
 - The active database URL is a Supabase Postgres pooler host ending in
   `pooler.supabase.com`.
+- Current API service: `supplier-intelligence-api-hut2`.
+- Current UI service: `supplier-intelligence-ui-hut2`.
 
 No secret values are recorded in this repository.
 
@@ -23,6 +27,8 @@ No secret values are recorded in this repository.
 The remaining degraded readiness items are external configuration controls:
 
 - `CORS_ALLOW_ORIGINS` must be set to explicit trusted origins.
+  - Current expected UI origin:
+    `https://supplier-intelligence-ui-hut2.onrender.com`
 - OIDC configuration is missing:
   - `OIDC_ISSUER_URL`
   - `OIDC_CLIENT_ID`
@@ -40,6 +46,12 @@ The remaining degraded readiness items are external configuration controls:
 
 Supabase is now an accepted managed storage provider for staging/production
 readiness, but only when the required Supabase bucket variables exist.
+
+The current Supabase staging bucket names are:
+
+- `supplier-evidence-staging`
+- `supplier-uploads-quarantine-staging`
+- `supplier-uploads-clean-staging`
 
 This does not weaken production checks:
 
@@ -60,3 +72,9 @@ Set the missing Render/Supabase/OIDC env vars, then run:
 Only move to **Staging-ready with external controls validated** after the
 artifact includes real API, OIDC tenant, Supabase DB, storage, scanner,
 observability, and backup/restore evidence.
+
+Current milestone label:
+
+**Staging API live with Supabase Postgres validated; overall readiness still
+degraded pending OIDC, CORS, storage readiness, scanner, backup/restore, and
+observability.**

@@ -24,13 +24,17 @@ SUPPLIER_DATABASE_URL=<Supabase pooler Postgres URL>
 DATABASE_URL=<same Supabase pooler Postgres URL, if needed by provider tooling>
 ```
 
+Use the Supabase **Session pooler** for Render runtime. `DATABASE_URL` and
+`SUPPLIER_DATABASE_URL` should point to the same redacted Supabase pooler host.
+Old Render Postgres is no longer the intended app database.
+
 Runtime posture:
 
 ```text
 SUPPLIER_SECURITY_MODE=production
 SUPPLIER_DEPLOYMENT_MODE=render-staging-phase1
 SUPPLIER_DEMO_MODE=false
-CORS_ALLOW_ORIGINS=https://<trusted-ui-origin>
+CORS_ALLOW_ORIGINS=https://supplier-intelligence-ui-hut2.onrender.com
 AUTH_PROVIDER=oidc
 AUTH_ALLOW_LOCAL_IN_PRODUCTION=false
 ```
@@ -51,9 +55,9 @@ Storage readiness accepts either `s3` or `supabase`. For Supabase Storage:
 
 ```text
 SUPPLIER_UPLOAD_STORAGE_PROVIDER=supabase
-SUPABASE_EVIDENCE_BUCKET=<evidence-bucket>
-SUPABASE_UPLOAD_QUARANTINE_BUCKET=<quarantine-bucket>
-SUPABASE_UPLOAD_CLEAN_BUCKET=<clean-upload-bucket>
+SUPABASE_EVIDENCE_BUCKET=supplier-evidence-staging
+SUPABASE_UPLOAD_QUARANTINE_BUCKET=supplier-uploads-quarantine-staging
+SUPABASE_UPLOAD_CLEAN_BUCKET=supplier-uploads-clean-staging
 ```
 
 The buckets represent separate evidence, quarantine, and clean-upload storage
@@ -85,9 +89,9 @@ $env:STAGING_EXPECTED_TENANT_ID="<tenant-id>"
 $env:POSTGRES_URL="<Supabase pooler Postgres URL>"
 $env:STAGING_DB_READONLY_APPROVED="true"
 $env:SUPPLIER_UPLOAD_STORAGE_PROVIDER="supabase"
-$env:SUPABASE_EVIDENCE_BUCKET="<evidence-bucket>"
-$env:SUPABASE_UPLOAD_QUARANTINE_BUCKET="<quarantine-bucket>"
-$env:SUPABASE_UPLOAD_CLEAN_BUCKET="<clean-upload-bucket>"
+$env:SUPABASE_EVIDENCE_BUCKET="supplier-evidence-staging"
+$env:SUPABASE_UPLOAD_QUARANTINE_BUCKET="supplier-uploads-quarantine-staging"
+$env:SUPABASE_UPLOAD_CLEAN_BUCKET="supplier-uploads-clean-staging"
 .\venv\Scripts\python.exe scripts\validate_managed_staging.py
 ```
 
@@ -99,3 +103,9 @@ The validator redacts secrets and performs read-only database checks only when
 Use **Conditional go for managed staging** until CORS, OIDC, Supabase storage
 buckets, and scanner/observability/backup evidence are complete. Do not call
 this production-ready.
+
+Final milestone wording for the current Render/Supabase slice:
+
+**Staging API live with Supabase Postgres validated; overall readiness still
+degraded pending OIDC, CORS, storage readiness, scanner, backup/restore, and
+observability.**

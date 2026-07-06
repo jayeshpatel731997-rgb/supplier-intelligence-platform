@@ -37,9 +37,9 @@ They set these non-secret values:
 - `SUPPLIER_ALLOWED_UPLOAD_MIME_TYPES=text/csv,application/csv,text/plain,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
 - `SUPPLIER_UPLOAD_STORAGE_PROVIDER=supabase`
 - `SUPPLIER_UPLOAD_STORAGE_KEY_PREFIX=uploads`
-- `SUPABASE_EVIDENCE_BUCKET=supplier-evidence`
-- `SUPABASE_UPLOAD_QUARANTINE_BUCKET=supplier-upload-quarantine`
-- `SUPABASE_UPLOAD_CLEAN_BUCKET=supplier-upload-clean`
+- `SUPABASE_EVIDENCE_BUCKET=supplier-evidence-staging`
+- `SUPABASE_UPLOAD_QUARANTINE_BUCKET=supplier-uploads-quarantine-staging`
+- `SUPABASE_UPLOAD_CLEAN_BUCKET=supplier-uploads-clean-staging`
 - `SUPPLIER_UPLOAD_SCANNER_REQUIRED=false`
 - `SUPPLIER_UPLOAD_SCANNER_PROVIDER=none`
 - `RETENTION_ENABLED=false`
@@ -61,7 +61,7 @@ not implemented.
 
 Set these for real staging:
 
-- `CORS_ALLOW_ORIGINS=https://<your-streamlit-or-ui-origin>`
+- `CORS_ALLOW_ORIGINS=https://supplier-intelligence-ui-hut2.onrender.com`
 - `OIDC_ISSUER_URL`
 - `OIDC_CLIENT_ID`
 - `OIDC_CLIENT_SECRET`

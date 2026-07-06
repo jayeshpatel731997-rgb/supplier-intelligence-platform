@@ -18,14 +18,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = ROOT / "artifacts" / "managed-staging-readiness"
-READINESS_LABEL = "Conditional go for managed staging"
+READINESS_LABEL = (
+    "Staging API live with Supabase Postgres validated; overall readiness still degraded pending OIDC, "
+    "CORS, storage readiness, scanner, backup/restore, and observability."
+)
 
 SECRET_PATTERNS = [
     re.compile(r"(Authorization:\s*Bearer\s+)[^\s]+", re.IGNORECASE),
     re.compile(r"((?:api[_-]?key|token|secret|password|client[_-]?secret)[=:]\s*)[^,\s]+", re.IGNORECASE),
     re.compile(r"(postgres(?:ql)?(?:\+psycopg)?://[^:/@\s]+:)[^@\s]+(@)", re.IGNORECASE),
     re.compile(r"(DATABASE_URL\s*=\s*)[^\s]+", re.IGNORECASE),
-    re.compile(r"((?:AWS|OPENAI|ANTHROPIC|NEWSAPI|GITHUB|RENDER)[A-Z0-9_]*(?:KEY|TOKEN|SECRET)\s*=\s*)[^\s]+", re.IGNORECASE),
+    re.compile(r"((?:AWS|OPENAI|ANTHROPIC|NEWSAPI|GITHUB|RENDER|SUPABASE)[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*)[^\s]+", re.IGNORECASE),
 ]
 
 
@@ -134,14 +137,14 @@ def main() -> int:
         managed_env.update(
             {
                 "SUPPLIER_UPLOAD_STORAGE_PROVIDER": "supabase",
-                "SUPABASE_EVIDENCE_BUCKET": os.getenv("SUPABASE_EVIDENCE_BUCKET", "supplier-evidence"),
+                "SUPABASE_EVIDENCE_BUCKET": os.getenv("SUPABASE_EVIDENCE_BUCKET", "supplier-evidence-staging"),
                 "SUPABASE_UPLOAD_QUARANTINE_BUCKET": os.getenv(
                     "SUPABASE_UPLOAD_QUARANTINE_BUCKET",
-                    "supplier-upload-quarantine",
+                    "supplier-uploads-quarantine-staging",
                 ),
                 "SUPABASE_UPLOAD_CLEAN_BUCKET": os.getenv(
                     "SUPABASE_UPLOAD_CLEAN_BUCKET",
-                    "supplier-upload-clean",
+                    "supplier-uploads-clean-staging",
                 ),
             }
         )

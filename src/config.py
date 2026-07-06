@@ -283,7 +283,10 @@ def get_settings() -> Settings:
             "text/csv,application/csv,text/plain,application/json,"
             "application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ),
-        upload_storage_provider=_secret_or_env("SUPPLIER_UPLOAD_STORAGE_PROVIDER", "local").lower(),
+        upload_storage_provider=_secret_or_env(
+            "SUPPLIER_UPLOAD_STORAGE_PROVIDER",
+            _secret_or_env("STORAGE_PROVIDER", "local"),
+        ).lower(),
         upload_storage_path=_secret_or_env("SUPPLIER_UPLOAD_STORAGE_PATH", "data/uploads"),
         upload_storage_bucket=_secret_or_env("SUPPLIER_UPLOAD_STORAGE_BUCKET", ""),
         upload_storage_region=_secret_or_env("SUPPLIER_UPLOAD_STORAGE_REGION", ""),

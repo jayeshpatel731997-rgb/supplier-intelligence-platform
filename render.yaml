@@ -90,11 +90,11 @@ envVarGroups:
       - key: SUPPLIER_UPLOAD_STORAGE_KEY_PREFIX
         value: uploads
       - key: SUPABASE_EVIDENCE_BUCKET
-        value: supplier-evidence
+        value: supplier-evidence-staging
       - key: SUPABASE_UPLOAD_QUARANTINE_BUCKET
-        value: supplier-upload-quarantine
+        value: supplier-uploads-quarantine-staging
       - key: SUPABASE_UPLOAD_CLEAN_BUCKET
-        value: supplier-upload-clean
+        value: supplier-uploads-clean-staging
       - key: SUPPLIER_UPLOAD_SCANNER_REQUIRED
         value: "false"
       - key: SUPPLIER_UPLOAD_SCANNER_PROVIDER

@@ -26,7 +26,7 @@ SECRET_PATTERNS = [
     re.compile(r"((?:Cookie|Set-Cookie):\s*)[^\r\n]+", re.IGNORECASE),
     re.compile(r"(postgres(?:ql)?(?:\+psycopg)?://[^:/@\s]+:)[^@\s]+(@)", re.IGNORECASE),
     re.compile(r"((?:DATABASE|POSTGRES)_URL\s*=\s*)[^\s]+", re.IGNORECASE),
-    re.compile(r"((?:AWS|S3|RENDER|OIDC|STAGING)[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*)[^\s]+", re.IGNORECASE),
+    re.compile(r"((?:AWS|S3|RENDER|OIDC|STAGING|SUPABASE)[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*)[^\s]+", re.IGNORECASE),
 ]
 
 
@@ -212,7 +212,7 @@ def validate_backup_restore(env: Mapping[str, str]) -> list[ValidationResult]:
 
 
 def validate_object_storage(env: Mapping[str, str]) -> list[ValidationResult]:
-    provider = _env_first(env, "SUPPLIER_UPLOAD_STORAGE_PROVIDER", "STAGING_UPLOAD_STORAGE_PROVIDER")
+    provider = _env_first(env, "SUPPLIER_UPLOAD_STORAGE_PROVIDER", "STORAGE_PROVIDER", "STAGING_UPLOAD_STORAGE_PROVIDER")
     supabase_evidence_bucket = _env_first(env, "SUPABASE_EVIDENCE_BUCKET")
     supabase_quarantine_bucket = _env_first(env, "SUPABASE_UPLOAD_QUARANTINE_BUCKET")
     supabase_clean_bucket = _env_first(env, "SUPABASE_UPLOAD_CLEAN_BUCKET")
@@ -348,7 +348,7 @@ def readiness_label(results: list[ValidationResult]) -> str:
     required = {"staging_api_ready", "staging_api_authenticated_status", "postgres_readonly"}
     if required.issubset(validated_external):
         return "Staging-ready with external controls validated"
-    if any(result.status == "PASS" for result in results):
+    if any(result.status == "PASS" and result.name in {"staging_api_health", "postgres_readonly"} for result in results):
         return "Staging-ready with mocks for external controls"
     return "Conditional go for managed staging"
 
