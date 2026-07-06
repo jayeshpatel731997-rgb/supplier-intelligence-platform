@@ -80,6 +80,17 @@ def test_render_blueprints_keep_api_and_ui_services_separate():
         assert "healthCheckPath: /_stcore/health" in text
 
 
+def test_render_blueprints_default_to_supabase_storage_buckets():
+    for blueprint in ("render.yaml", "render.full.yaml"):
+        text = (ROOT / blueprint).read_text(encoding="utf-8")
+
+        assert "key: SUPPLIER_UPLOAD_STORAGE_PROVIDER" in text
+        assert "value: supabase" in text
+        assert "key: SUPABASE_EVIDENCE_BUCKET" in text
+        assert "key: SUPABASE_UPLOAD_QUARANTINE_BUCKET" in text
+        assert "key: SUPABASE_UPLOAD_CLEAN_BUCKET" in text
+
+
 def test_render_startup_scripts_use_exec_and_render_port():
     api_script = (ROOT / "scripts" / "start_api_render.sh").read_text(encoding="utf-8")
     ui_script = (ROOT / "scripts" / "start_ui_render.sh").read_text(encoding="utf-8")

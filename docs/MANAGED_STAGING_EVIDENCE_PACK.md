@@ -61,16 +61,21 @@ accepts:
   `POSTGRES_RESTORE_TARGET_URL`, and
   `STAGING_RESTORE_TARGET_CONFIRMED_DISPOSABLE=true` before any backup/restore
   drill is considered approved.
-- `STAGING_S3_BUCKET`, `STAGING_S3_ENDPOINT_URL`, region/access settings, and
-  `STAGING_OBJECT_STORAGE_VALIDATE=true` for a live object-storage reachability
-  check.
+- S3 storage evidence: `STAGING_S3_BUCKET`, `STAGING_S3_ENDPOINT_URL`,
+  region/access settings, and `STAGING_OBJECT_STORAGE_VALIDATE=true` for a live
+  object-storage reachability check.
+- Supabase storage readiness evidence:
+  `SUPPLIER_UPLOAD_STORAGE_PROVIDER=supabase`,
+  `SUPABASE_EVIDENCE_BUCKET`, `SUPABASE_UPLOAD_QUARANTINE_BUCKET`, and
+  `SUPABASE_UPLOAD_CLEAN_BUCKET`.
 - `STAGING_UPLOAD_SCANNER_PROVIDER` and
   `STAGING_UPLOAD_SCANNER_ENDPOINT_URL` for scanner configuration evidence.
 - `RENDER_API_KEY` and `RENDER_SERVICE_ID`/`STAGING_RENDER_API_SERVICE_ID` for
   non-destructive Render service metadata evidence.
 
 All output is redacted. Missing external credentials are recorded as skipped,
-not silently treated as passing.
+not silently treated as passing. Supabase bucket readiness is not malware
+scanning evidence; scanner/quarantine behavior remains a separate control.
 
 ## Evidence Interpretation
 

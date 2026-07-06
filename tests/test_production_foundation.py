@@ -288,6 +288,81 @@ def test_production_runtime_requires_complete_object_storage_config():
     assert any("SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL" in issue for issue in issues)
 
 
+def test_production_runtime_accepts_complete_s3_storage_config():
+    settings = Settings(
+        security_mode="production",
+        database_url="postgresql+psycopg://user:pass@db:5432/app",
+        demo_mode=False,
+        auth_provider="local",
+        auth_allow_local_in_production=True,
+        cors_allow_origins="https://staging.example.com",
+        upload_storage_provider="s3",
+        upload_storage_bucket="supplier-uploads",
+        upload_storage_endpoint_url="https://object-storage.example.com",
+        upload_storage_access_key_id="access-key",
+        upload_storage_secret_access_key="secret-key",
+    )
+
+    issues = settings.validate_runtime()
+
+    assert not [issue for issue in issues if "SUPPLIER_UPLOAD_STORAGE_PROVIDER" in issue]
+    assert not [issue for issue in issues if "SUPPLIER_UPLOAD_STORAGE_BUCKET" in issue]
+
+
+def test_production_runtime_accepts_complete_supabase_storage_config():
+    settings = Settings(
+        security_mode="production",
+        database_url="postgresql+psycopg://user:pass@db.pooler.supabase.com:6543/postgres",
+        demo_mode=False,
+        auth_provider="local",
+        auth_allow_local_in_production=True,
+        cors_allow_origins="https://staging.example.com",
+        upload_storage_provider="supabase",
+        supabase_evidence_bucket="evidence",
+        supabase_upload_quarantine_bucket="upload-quarantine",
+        supabase_upload_clean_bucket="upload-clean",
+    )
+
+    issues = settings.validate_runtime()
+
+    assert not [issue for issue in issues if "SUPPLIER_UPLOAD_STORAGE_PROVIDER" in issue]
+    assert not [issue for issue in issues if "SUPABASE_" in issue]
+
+
+def test_production_runtime_degrades_for_incomplete_supabase_storage_config():
+    settings = Settings(
+        security_mode="production",
+        database_url="postgresql+psycopg://user:pass@db.pooler.supabase.com:6543/postgres",
+        demo_mode=False,
+        auth_provider="local",
+        auth_allow_local_in_production=True,
+        cors_allow_origins="https://staging.example.com",
+        upload_storage_provider="supabase",
+        supabase_evidence_bucket="evidence",
+    )
+
+    issues = settings.validate_runtime()
+
+    assert any("SUPABASE_UPLOAD_QUARANTINE_BUCKET" in issue for issue in issues)
+    assert any("SUPABASE_UPLOAD_CLEAN_BUCKET" in issue for issue in issues)
+
+
+def test_production_runtime_rejects_local_storage_provider():
+    settings = Settings(
+        security_mode="production",
+        database_url="postgresql+psycopg://user:pass@db:5432/app",
+        demo_mode=False,
+        auth_provider="local",
+        auth_allow_local_in_production=True,
+        cors_allow_origins="https://staging.example.com",
+        upload_storage_provider="local",
+    )
+
+    issues = settings.validate_runtime()
+
+    assert any("SUPPLIER_UPLOAD_STORAGE_PROVIDER must be s3 or supabase" in issue for issue in issues)
+
+
 def test_production_runtime_fails_when_upload_scanner_is_required_but_missing():
     settings = Settings(
         security_mode="production",

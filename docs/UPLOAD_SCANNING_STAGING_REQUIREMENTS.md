@@ -4,8 +4,10 @@
 
 The platform already bounds uploads by filename, extension, MIME type, size, and
 tenant-scoped storage key. Local/demo mode stores files under the configured
-local upload path. Staging/production readiness requires S3-compatible object
-storage configuration before `/ready` can pass.
+local upload path. Staging/production readiness requires managed object storage
+configuration before `/ready` can pass. Managed storage can be either
+S3-compatible storage or Supabase Storage with dedicated evidence, quarantine,
+and clean-upload buckets.
 
 This update adds a deterministic `eicar-test` / `staging-safe` scanner adapter.
 It rejects the harmless EICAR-style scanner test signature so tests can prove
@@ -29,8 +31,11 @@ Managed staging should use:
 
 ## Validation Checklist
 
-1. Set `SUPPLIER_UPLOAD_STORAGE_PROVIDER=s3`.
-2. Configure bucket, endpoint, region, access key, secret key, and key prefix.
+1. Set `SUPPLIER_UPLOAD_STORAGE_PROVIDER=s3` and configure bucket, endpoint,
+   region, access key, secret key, and key prefix; or set
+   `SUPPLIER_UPLOAD_STORAGE_PROVIDER=supabase` with
+   `SUPABASE_EVIDENCE_BUCKET`, `SUPABASE_UPLOAD_QUARANTINE_BUCKET`, and
+   `SUPABASE_UPLOAD_CLEAN_BUCKET`.
 3. Set `SUPPLIER_UPLOAD_SCANNER_REQUIRED=true`.
 4. Set `SUPPLIER_UPLOAD_SCANNER_PROVIDER=<clamav|icap|vendor>`.
 5. Set `SUPPLIER_UPLOAD_SCANNER_ENDPOINT_URL=<scanner-endpoint>`.

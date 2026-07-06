@@ -92,6 +92,9 @@ class Settings:
     upload_storage_access_key_id: str = ""
     upload_storage_secret_access_key: str = ""
     upload_storage_key_prefix: str = "uploads"
+    supabase_evidence_bucket: str = ""
+    supabase_upload_quarantine_bucket: str = ""
+    supabase_upload_clean_bucket: str = ""
     upload_scanner_required: bool = False
     upload_scanner_provider: str = "none"
     upload_scanner_endpoint_url: str = ""
@@ -214,8 +217,8 @@ class Settings:
                 issues.append("SAML metadata URL or file is required in staging/production SAML mode.")
             elif self.auth_provider not in {"local", "oidc", "saml"}:
                 issues.append(f"Unsupported AUTH_PROVIDER for staging/production: {self.auth_provider}.")
-            if self.upload_storage_provider != "s3":
-                issues.append("SUPPLIER_UPLOAD_STORAGE_PROVIDER must be s3 in staging/production mode.")
+            if self.upload_storage_provider not in {"s3", "supabase"}:
+                issues.append("SUPPLIER_UPLOAD_STORAGE_PROVIDER must be s3 or supabase in staging/production mode.")
             if self.upload_storage_provider == "s3":
                 if not self.upload_storage_bucket:
                     issues.append("SUPPLIER_UPLOAD_STORAGE_BUCKET is required for staging/production upload storage.")
@@ -225,6 +228,13 @@ class Settings:
                     issues.append("SUPPLIER_UPLOAD_STORAGE_ACCESS_KEY_ID is required for staging/production upload storage.")
                 if not self.upload_storage_secret_access_key:
                     issues.append("SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY is required for staging/production upload storage.")
+            if self.upload_storage_provider == "supabase":
+                if not self.supabase_evidence_bucket:
+                    issues.append("SUPABASE_EVIDENCE_BUCKET is required for Supabase staging/production storage.")
+                if not self.supabase_upload_quarantine_bucket:
+                    issues.append("SUPABASE_UPLOAD_QUARANTINE_BUCKET is required for Supabase staging/production storage.")
+                if not self.supabase_upload_clean_bucket:
+                    issues.append("SUPABASE_UPLOAD_CLEAN_BUCKET is required for Supabase staging/production storage.")
             if self.upload_scanner_required and self.upload_scanner_provider == "none":
                 issues.append("SUPPLIER_UPLOAD_SCANNER_PROVIDER is required when upload scanning is required in staging/production.")
             if self.upload_scanner_required and self.upload_scanner_provider != "none" and not self.upload_scanner_endpoint_url:
@@ -281,6 +291,9 @@ def get_settings() -> Settings:
         upload_storage_access_key_id=_secret_or_env("SUPPLIER_UPLOAD_STORAGE_ACCESS_KEY_ID", ""),
         upload_storage_secret_access_key=_secret_or_env("SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY", ""),
         upload_storage_key_prefix=_secret_or_env("SUPPLIER_UPLOAD_STORAGE_KEY_PREFIX", "uploads"),
+        supabase_evidence_bucket=_secret_or_env("SUPABASE_EVIDENCE_BUCKET", ""),
+        supabase_upload_quarantine_bucket=_secret_or_env("SUPABASE_UPLOAD_QUARANTINE_BUCKET", ""),
+        supabase_upload_clean_bucket=_secret_or_env("SUPABASE_UPLOAD_CLEAN_BUCKET", ""),
         upload_scanner_required=_bool_env("SUPPLIER_UPLOAD_SCANNER_REQUIRED", False),
         upload_scanner_provider=_secret_or_env("SUPPLIER_UPLOAD_SCANNER_PROVIDER", "none").lower(),
         upload_scanner_endpoint_url=_secret_or_env("SUPPLIER_UPLOAD_SCANNER_ENDPOINT_URL", ""),

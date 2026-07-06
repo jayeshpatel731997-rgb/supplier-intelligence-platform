@@ -51,3 +51,27 @@ def test_incomplete_object_storage_configuration_fails():
 
     assert any(result.name == "object_storage_config" and result.status == "FAIL" for result in results)
     assert readiness_label(results) == "Conditional go for managed staging"
+
+
+def test_complete_supabase_object_storage_configuration_passes():
+    results = run_validation(
+        {
+            "SUPPLIER_UPLOAD_STORAGE_PROVIDER": "supabase",
+            "SUPABASE_EVIDENCE_BUCKET": "evidence",
+            "SUPABASE_UPLOAD_QUARANTINE_BUCKET": "quarantine",
+            "SUPABASE_UPLOAD_CLEAN_BUCKET": "clean",
+        }
+    )
+
+    assert any(result.name == "object_storage_config" and result.status == "PASS" for result in results)
+
+
+def test_incomplete_supabase_object_storage_configuration_fails():
+    results = run_validation(
+        {
+            "SUPPLIER_UPLOAD_STORAGE_PROVIDER": "supabase",
+            "SUPABASE_EVIDENCE_BUCKET": "evidence",
+        }
+    )
+
+    assert any(result.name == "object_storage_config" and result.status == "FAIL" for result in results)

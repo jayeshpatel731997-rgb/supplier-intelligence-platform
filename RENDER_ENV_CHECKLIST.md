@@ -35,8 +35,11 @@ They set these non-secret values:
 - `SUPPLIER_MAX_UPLOAD_BYTES=5000000`
 - `SUPPLIER_ALLOWED_UPLOAD_EXTENSIONS=.csv,.xlsx,.xls,.json`
 - `SUPPLIER_ALLOWED_UPLOAD_MIME_TYPES=text/csv,application/csv,text/plain,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
-- `SUPPLIER_UPLOAD_STORAGE_PROVIDER=s3`
+- `SUPPLIER_UPLOAD_STORAGE_PROVIDER=supabase`
 - `SUPPLIER_UPLOAD_STORAGE_KEY_PREFIX=uploads`
+- `SUPABASE_EVIDENCE_BUCKET=supplier-evidence`
+- `SUPABASE_UPLOAD_QUARANTINE_BUCKET=supplier-upload-quarantine`
+- `SUPABASE_UPLOAD_CLEAN_BUCKET=supplier-upload-clean`
 - `SUPPLIER_UPLOAD_SCANNER_REQUIRED=false`
 - `SUPPLIER_UPLOAD_SCANNER_PROVIDER=none`
 - `RETENTION_ENABLED=false`
@@ -68,11 +71,17 @@ Set these for real staging:
 - `OIDC_CLOCK_SKEW_SECONDS=60`
 - `SUPPLIER_API_BASE_URL=https://<your-api-origin>`
 - `SUPPLIER_STAGING_SEED_USERNAME=<oidc-subject-or-verified-email>` when the deterministic seed is approved
-- `SUPPLIER_UPLOAD_STORAGE_BUCKET`
-- `SUPPLIER_UPLOAD_STORAGE_REGION`
-- `SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL`
-- `SUPPLIER_UPLOAD_STORAGE_ACCESS_KEY_ID`
-- `SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY`
+- For S3-compatible storage:
+  - `SUPPLIER_UPLOAD_STORAGE_BUCKET`
+  - `SUPPLIER_UPLOAD_STORAGE_REGION`
+  - `SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL`
+  - `SUPPLIER_UPLOAD_STORAGE_ACCESS_KEY_ID`
+  - `SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY`
+- For Supabase Storage:
+  - `SUPPLIER_UPLOAD_STORAGE_PROVIDER=supabase`
+  - `SUPABASE_EVIDENCE_BUCKET`
+  - `SUPABASE_UPLOAD_QUARANTINE_BUCKET`
+  - `SUPABASE_UPLOAD_CLEAN_BUCKET`
 
 If policy requires upload scanning:
 
@@ -139,8 +148,8 @@ $env:STAGING_API_KEY="<tenant-api-key>"
 ## Manual Blockers
 
 - Real OIDC/SAML provider configuration and tenant membership sync are manual.
-- Real S3-compatible object storage bucket, credentials, and lifecycle policy
-  are manual.
+- Real S3-compatible or Supabase Storage buckets, credentials, and lifecycle
+  policy are manual.
 - Real scanner integration is manual; the code currently has a scanner
   interface/stub and fail-closed readiness checks.
 - Render Postgres backup/restore validation is manual.

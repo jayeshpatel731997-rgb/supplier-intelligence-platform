@@ -86,9 +86,15 @@ envVarGroups:
       - key: SUPPLIER_ALLOWED_UPLOAD_MIME_TYPES
         value: text/csv,application/csv,text/plain,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
       - key: SUPPLIER_UPLOAD_STORAGE_PROVIDER
-        value: s3
+        value: supabase
       - key: SUPPLIER_UPLOAD_STORAGE_KEY_PREFIX
         value: uploads
+      - key: SUPABASE_EVIDENCE_BUCKET
+        value: supplier-evidence
+      - key: SUPABASE_UPLOAD_QUARANTINE_BUCKET
+        value: supplier-upload-quarantine
+      - key: SUPABASE_UPLOAD_CLEAN_BUCKET
+        value: supplier-upload-clean
       - key: SUPPLIER_UPLOAD_SCANNER_REQUIRED
         value: "false"
       - key: SUPPLIER_UPLOAD_SCANNER_PROVIDER

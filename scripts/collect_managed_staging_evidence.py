@@ -36,7 +36,13 @@ def redact(text: str) -> str:
     return redacted
 
 
-def run_command(name: str, command: list[str], artifact_dir: Path, timeout: int = 300) -> dict[str, object]:
+def run_command(
+    name: str,
+    command: list[str],
+    artifact_dir: Path,
+    timeout: int = 300,
+    env_overrides: dict[str, str] | None = None,
+) -> dict[str, object]:
     log_path = artifact_dir / f"{name}.log"
     result: dict[str, object] = {"name": name, "command": command, "skipped": False}
     try:
@@ -47,6 +53,7 @@ def run_command(name: str, command: list[str], artifact_dir: Path, timeout: int 
             capture_output=True,
             timeout=timeout,
             check=False,
+            env={**os.environ, **(env_overrides or {})},
         )
         output = redact((completed.stdout or "") + (completed.stderr or ""))
         log_path.write_text(output, encoding="utf-8")
@@ -66,6 +73,12 @@ def write_skip(name: str, artifact_dir: Path, reason: str) -> dict[str, object]:
     log_path = artifact_dir / f"{name}.log"
     log_path.write_text(f"SKIPPED: {reason}\n", encoding="utf-8")
     return {"name": name, "skipped": True, "reason": reason, "log": str(log_path.relative_to(ROOT))}
+
+
+def write_pass(name: str, artifact_dir: Path, detail: str) -> dict[str, object]:
+    log_path = artifact_dir / f"{name}.log"
+    log_path.write_text(f"PASS: {redact(detail)}\n", encoding="utf-8")
+    return {"name": name, "skipped": False, "exit_code": 0, "log": str(log_path.relative_to(ROOT))}
 
 
 def tool_status() -> dict[str, str]:
@@ -99,7 +112,6 @@ def main() -> int:
         ("ruff", [str(ROOT / "venv" / "Scripts" / "ruff.exe") if os.name == "nt" else "ruff", "check", "."], 300),
         ("secret_leakage", [python, "scripts/check_secret_leakage.py"], 300),
         ("local_api_smoke", [python, "scripts/local_smoke.py"], 180),
-        ("managed_staging_validation", [python, "scripts/validate_managed_staging.py"], 240),
         ("render_yaml_parse", [python, "-c", "import pathlib,yaml; [yaml.safe_load(pathlib.Path(p).read_text()) for p in ('render.yaml','render.full.yaml','docker-compose.yml')]; print('deployment YAML parsed')"], 120),
         ("render_startup_shell_syntax", ["bash", "-n", "scripts/start_api_render.sh", "scripts/start_ui_render.sh"], 120),
     ]
@@ -117,6 +129,44 @@ def main() -> int:
         checks.append(("frontend_npm_install_check", ["npm", "install", "--dry-run"], 180))
 
     results = [run_command(name, command, artifact_dir, timeout) for name, command, timeout in checks]
+    managed_env: dict[str, str] = {}
+    if os.getenv("OBSERVED_SUPABASE_STORAGE_CONFIGURED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        managed_env.update(
+            {
+                "SUPPLIER_UPLOAD_STORAGE_PROVIDER": "supabase",
+                "SUPABASE_EVIDENCE_BUCKET": os.getenv("SUPABASE_EVIDENCE_BUCKET", "supplier-evidence"),
+                "SUPABASE_UPLOAD_QUARANTINE_BUCKET": os.getenv(
+                    "SUPABASE_UPLOAD_QUARANTINE_BUCKET",
+                    "supplier-upload-quarantine",
+                ),
+                "SUPABASE_UPLOAD_CLEAN_BUCKET": os.getenv(
+                    "SUPABASE_UPLOAD_CLEAN_BUCKET",
+                    "supplier-upload-clean",
+                ),
+            }
+        )
+    results.append(
+        run_command(
+            "managed_staging_validation",
+            [python, "scripts/validate_managed_staging.py"],
+            artifact_dir,
+            240,
+            env_overrides=managed_env,
+        )
+    )
+    if os.getenv("OBSERVED_RENDER_API_HEALTH_OK", "").strip().lower() in {"1", "true", "yes", "on"}:
+        detail = "Operator-observed Render API /health returned status ok."
+        if os.getenv("OBSERVED_SUPABASE_DB_HEALTH_OK", "").strip().lower() in {"1", "true", "yes", "on"}:
+            detail += " Operator-observed database health passed using a Supabase pooler host."
+        results.append(write_pass("observed_render_supabase_health", artifact_dir, detail))
+    else:
+        results.append(
+            write_skip(
+                "observed_render_supabase_health",
+                artifact_dir,
+                "OBSERVED_RENDER_API_HEALTH_OK=true not set; no operator-observed Render/Supabase health evidence recorded.",
+            )
+        )
     if not package_json_present:
         results.append(
             write_skip(
@@ -189,6 +239,7 @@ def main() -> int:
             "- Repository-local tests, lint, compile, and secret scan results are captured when commands pass.",
             "- Deployment YAML parsing and Render startup shell syntax are captured.",
             "- Managed staging validation records API, Postgres, object storage, scanner, and Render evidence when corresponding credentials are configured.",
+            "- Operator-observed Render/Supabase health can be attached with OBSERVED_RENDER_API_HEALTH_OK=true and OBSERVED_SUPABASE_DB_HEALTH_OK=true without recording URLs or secrets.",
             "- GitHub CI status is captured when GitHub CLI is available.",
             "",
             "## What Is Mocked Or Staging-Safe",
@@ -202,7 +253,7 @@ def main() -> int:
             "- Render deployment evidence and dashboard screenshots.",
             "- Managed Postgres backup/restore drill against an approved staging or disposable target.",
             "- Real IdP/MFA/tenant sync and Streamlit browser OIDC callback validation.",
-            "- S3-compatible object storage, real scanner/quarantine service, managed secrets/KMS, log drains, metrics, and alerting.",
+            "- Managed object storage live checks, real scanner/quarantine service, managed secrets/KMS, log drains, metrics, and alerting.",
             "",
             "## Failures",
             "",

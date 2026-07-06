@@ -213,6 +213,30 @@ def validate_backup_restore(env: Mapping[str, str]) -> list[ValidationResult]:
 
 def validate_object_storage(env: Mapping[str, str]) -> list[ValidationResult]:
     provider = _env_first(env, "SUPPLIER_UPLOAD_STORAGE_PROVIDER", "STAGING_UPLOAD_STORAGE_PROVIDER")
+    supabase_evidence_bucket = _env_first(env, "SUPABASE_EVIDENCE_BUCKET")
+    supabase_quarantine_bucket = _env_first(env, "SUPABASE_UPLOAD_QUARANTINE_BUCKET")
+    supabase_clean_bucket = _env_first(env, "SUPABASE_UPLOAD_CLEAN_BUCKET")
+    supabase_configured = any([supabase_evidence_bucket, supabase_quarantine_bucket, supabase_clean_bucket])
+    if provider == "supabase" or supabase_configured:
+        missing = [
+            name
+            for name, value in {
+                "SUPABASE_EVIDENCE_BUCKET": supabase_evidence_bucket,
+                "SUPABASE_UPLOAD_QUARANTINE_BUCKET": supabase_quarantine_bucket,
+                "SUPABASE_UPLOAD_CLEAN_BUCKET": supabase_clean_bucket,
+            }.items()
+            if not value
+        ]
+        if missing:
+            return [ValidationResult("object_storage_config", "FAIL", f"Missing Supabase storage settings: {', '.join(missing)}.")]
+        return [
+            ValidationResult(
+                "object_storage_config",
+                "PASS",
+                "Supabase storage bucket configuration is complete; live bucket/object check must be captured separately.",
+            )
+        ]
+
     bucket = _env_first(env, "SUPPLIER_UPLOAD_STORAGE_BUCKET", "STAGING_S3_BUCKET")
     endpoint = _env_first(env, "SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL", "STAGING_S3_ENDPOINT_URL")
     access_key = _env_first(env, "SUPPLIER_UPLOAD_STORAGE_ACCESS_KEY_ID", "STAGING_S3_ACCESS_KEY_ID")
@@ -233,7 +257,7 @@ def validate_object_storage(env: Mapping[str, str]) -> list[ValidationResult]:
         if not value
     ]
     if provider and provider != "s3":
-        return [ValidationResult("object_storage_config", "FAIL", f"Expected s3 provider for managed staging, got {provider}.")]
+        return [ValidationResult("object_storage_config", "FAIL", f"Expected s3 or supabase provider for managed staging, got {provider}.")]
     if missing:
         return [ValidationResult("object_storage_config", "FAIL", f"Missing object storage settings: {', '.join(missing)}.")]
     if not _bool_env(env, "STAGING_OBJECT_STORAGE_VALIDATE"):
