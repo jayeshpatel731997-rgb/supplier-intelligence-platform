@@ -18,6 +18,34 @@ A unified platform that combines quantitative risk modeling with supplier perfor
 - Run near-real-time scheduled Sentinel/risk/exposure refresh jobs with a local scheduler or worker process
 - Scope SaaS data by tenant using tenant API keys in local/demo mode or verified OIDC bearer tokens in OIDC mode
 
+## Professor Demo And Managed-Staging Evidence
+
+For a short academic/professional walkthrough, start with
+[`docs/PROFESSOR_DEMO_GUIDE.md`](docs/PROFESSOR_DEMO_GUIDE.md). The simplest
+talk track is:
+
+- "This is a supplier intelligence and risk platform."
+- "It detects weak signals."
+- "It preserves evidence chains."
+- "It recommends actions."
+- "It is staging-ready only after external controls are validated."
+
+The current readiness label is **Conditional go for managed staging**. The repo
+has strong local/CI evidence, but real production controls still require
+external validation. Generate a timestamped evidence pack with:
+
+```bash
+python scripts/collect_managed_staging_evidence.py
+```
+
+The report is written under
+`artifacts/managed-staging-readiness/YYYYMMDD-HHMMSS/`. See
+[`docs/MANAGED_STAGING_EVIDENCE_PACK.md`](docs/MANAGED_STAGING_EVIDENCE_PACK.md),
+[`docs/STREAMLIT_OIDC_BROWSER_AUTH.md`](docs/STREAMLIT_OIDC_BROWSER_AUTH.md),
+[`docs/UPLOAD_SCANNING_STAGING_REQUIREMENTS.md`](docs/UPLOAD_SCANNING_STAGING_REQUIREMENTS.md),
+and [`docs/OBSERVABILITY_AND_RUNBOOK.md`](docs/OBSERVABILITY_AND_RUNBOOK.md)
+for the evidence boundaries.
+
 ## Architecture
 
 | Module | Method | Purpose |
