@@ -71,6 +71,12 @@ accepts:
   Current staging bucket names are `supplier-evidence-staging`,
   `supplier-uploads-quarantine-staging`, and
   `supplier-uploads-clean-staging`.
+  Set `SUPABASE_STORAGE_WRITE_APPROVED=true` plus `SUPABASE_URL` and a
+  backend-only Supabase storage token only when a live upload/read/delete check
+  is explicitly approved.
+- UI/CORS smoke evidence: `STAGING_UI_URL` or `STAGING_UI_BASE_URL` plus
+  `STAGING_API_URL`; run `scripts/smoke_ui_cors.py` after the UI service is
+  resumed and `CORS_ALLOW_ORIGINS` is set to the trusted UI origin.
 - `STAGING_UPLOAD_SCANNER_PROVIDER` and
   `STAGING_UPLOAD_SCANNER_ENDPOINT_URL` for scanner configuration evidence.
 - `RENDER_API_KEY` and `RENDER_SERVICE_ID`/`STAGING_RENDER_API_SERVICE_ID` for

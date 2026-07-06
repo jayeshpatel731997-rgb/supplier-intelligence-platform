@@ -19,8 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = ROOT / "artifacts" / "managed-staging-readiness"
 READINESS_LABEL = (
-    "Staging API live with Supabase Postgres validated; overall readiness still degraded pending OIDC, "
-    "CORS, storage readiness, scanner, backup/restore, and observability."
+    "Staging API live with Supabase Postgres validated; UI/CORS and remaining production controls pending."
 )
 
 SECRET_PATTERNS = [
@@ -178,6 +177,26 @@ def main() -> int:
                 "package.json not present; no frontend npm checks configured.",
             )
         )
+    if (os.getenv("STAGING_UI_URL") or os.getenv("STAGING_UI_BASE_URL")) and (
+        os.getenv("STAGING_API_URL") or os.getenv("STAGING_API_BASE_URL") or os.getenv("STAGING_BASE_URL")
+    ):
+        results.append(
+            run_command(
+                "ui_cors_smoke",
+                [python, "scripts/smoke_ui_cors.py"],
+                artifact_dir,
+                120,
+            )
+        )
+    else:
+        results.append(
+            write_skip(
+                "ui_cors_smoke",
+                artifact_dir,
+                "STAGING_UI_URL/STAGING_UI_BASE_URL and STAGING_API_URL/STAGING_API_BASE_URL are required; UI/CORS smoke not attempted.",
+            )
+        )
+
     if os.getenv("STAGING_API_URL") or os.getenv("STAGING_API_BASE_URL") or os.getenv("STAGING_BASE_URL"):
         results.append(
             run_command(
@@ -257,6 +276,7 @@ def main() -> int:
             "- Managed Postgres backup/restore drill against an approved staging or disposable target.",
             "- Real IdP/MFA/tenant sync and Streamlit browser OIDC callback validation.",
             "- Managed object storage live checks, real scanner/quarantine service, managed secrets/KMS, log drains, metrics, and alerting.",
+            "- UI/CORS smoke evidence after resuming supplier-intelligence-ui-hut2 and setting CORS_ALLOW_ORIGINS to the trusted UI origin.",
             "",
             "## Failures",
             "",

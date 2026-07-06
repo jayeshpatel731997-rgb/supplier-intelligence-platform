@@ -38,20 +38,29 @@ Capture screenshots or exported logs for:
 - `/live`, `/health`, and `/ready` responses.
 - Service logs showing clean startup and migration completion.
 - Rollback target and previous successful deploy.
+- Render logs screenshot for API startup and recent request handling.
+- Render metrics screenshot for API and UI service CPU/memory/restarts.
+- Request ID or correlation ID in at least one API response/log pair.
+- Log drain or alert-routing plan, including owner and escalation target.
+- Rollback proof showing the previous known-good deploy can be selected.
 
 ## Staging Smoke Checklist
 
 1. Confirm commit SHA and branch.
 2. Confirm Render API URL and Streamlit UI URL.
-3. Run `scripts/smoke_staging.py` with a short-lived OIDC token.
-4. Run `scripts/validate_managed_staging.py` with `STAGING_API_URL`,
+3. Resume `supplier-intelligence-ui-hut2` if it is suspended.
+4. Set API `CORS_ALLOW_ORIGINS` to
+   `https://supplier-intelligence-ui-hut2.onrender.com` and redeploy the API.
+5. Run `scripts/smoke_ui_cors.py` with `STAGING_UI_URL` and `STAGING_API_URL`.
+6. Run `scripts/smoke_staging.py` with a short-lived OIDC token.
+7. Run `scripts/validate_managed_staging.py` with `STAGING_API_URL`,
    `STAGING_API_TOKEN`, `STAGING_EXPECTED_TENANT_ID`, and any approved Postgres,
    object-storage, scanner, or Render evidence variables.
-5. Verify unauthenticated protected routes reject access.
-6. Verify authenticated tenant-scoped supplier read.
-7. Verify `X-Tenant-ID` override cannot cross tenant boundaries in OIDC mode.
-8. Verify connector sync, evidence-chain run, action update, and scoring config.
-9. Confirm smoke logs redact secrets.
+8. Verify unauthenticated protected routes reject access.
+9. Verify authenticated tenant-scoped supplier read.
+10. Verify `X-Tenant-ID` override cannot cross tenant boundaries in OIDC mode.
+11. Verify connector sync, evidence-chain run, action update, and scoring config.
+12. Confirm smoke logs redact secrets.
 
 ## Backup/Restore Checklist
 

@@ -6,6 +6,7 @@ from scripts.validate_managed_staging import (
     run_validation,
     staging_api_token,
     staging_api_url,
+    validate_supabase_storage_live,
 )
 from scripts.smoke_staging import auth_headers, staging_base_url
 
@@ -66,6 +67,7 @@ def test_complete_supabase_object_storage_configuration_passes():
 
     assert any(result.name == "object_storage_config" and result.status == "PASS" for result in results)
     assert readiness_label(results) == "Conditional go for managed staging"
+    assert any(result.name == "supabase_storage_live_check" and result.status == "SKIP" for result in results)
 
 
 def test_legacy_storage_provider_alias_accepts_complete_supabase_config():
@@ -90,3 +92,44 @@ def test_incomplete_supabase_object_storage_configuration_fails():
     )
 
     assert any(result.name == "object_storage_config" and result.status == "FAIL" for result in results)
+
+
+def test_supabase_live_storage_check_requires_explicit_approval():
+    results = validate_supabase_storage_live(
+        {
+            "SUPABASE_URL": "https://project.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "not-printed",
+        },
+        "supplier-uploads-quarantine-staging",
+    )
+
+    assert results[0].status == "SKIP"
+    assert "SUPABASE_STORAGE_WRITE_APPROVED" in results[0].detail
+    assert "not-printed" not in results[0].detail
+
+
+def test_supabase_live_storage_check_uploads_verifies_and_deletes_when_approved(monkeypatch):
+    import scripts.validate_managed_staging as validator
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_supabase_request(env, path, *, method="GET", body=None, content_type="application/json"):
+        del env, body, content_type
+        calls.append((method, path))
+        return 201 if method == "POST" else 200, "{}"
+
+    monkeypatch.setattr(validator, "_supabase_request", fake_supabase_request)
+
+    results = validate_supabase_storage_live(
+        {
+            "SUPABASE_STORAGE_WRITE_APPROVED": "true",
+            "SUPABASE_URL": "https://project.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "not-printed",
+        },
+        "supplier-uploads-quarantine-staging",
+    )
+
+    assert results[0].status == "PASS"
+    assert "malware scanning remains a separate control" in results[0].detail
+    assert [method for method, _path in calls] == ["POST", "GET", "DELETE"]
+    assert all("supplier-uploads-quarantine-staging" in path for _method, path in calls)

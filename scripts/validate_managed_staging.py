@@ -13,8 +13,10 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import Mapping
+from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -229,13 +231,15 @@ def validate_object_storage(env: Mapping[str, str]) -> list[ValidationResult]:
         ]
         if missing:
             return [ValidationResult("object_storage_config", "FAIL", f"Missing Supabase storage settings: {', '.join(missing)}.")]
-        return [
+        results = [
             ValidationResult(
                 "object_storage_config",
                 "PASS",
                 "Supabase storage bucket configuration is complete; live bucket/object check must be captured separately.",
             )
         ]
+        results.extend(validate_supabase_storage_live(env, supabase_quarantine_bucket or supabase_evidence_bucket))
+        return results
 
     bucket = _env_first(env, "SUPPLIER_UPLOAD_STORAGE_BUCKET", "STAGING_S3_BUCKET")
     endpoint = _env_first(env, "SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL", "STAGING_S3_ENDPOINT_URL")
@@ -276,6 +280,117 @@ def validate_object_storage(env: Mapping[str, str]) -> list[ValidationResult]:
         return [ValidationResult("object_storage_head_bucket", "PASS", "Bucket is reachable with provided credentials.")]
     except Exception as exc:
         return [ValidationResult("object_storage_head_bucket", "FAIL", f"Bucket validation failed: {redact(exc)}")]
+
+
+def _supabase_storage_headers(env: Mapping[str, str], *, content_type: str = "application/json") -> dict[str, str]:
+    token = _env_first(env, "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_STORAGE_ACCESS_TOKEN", "SUPABASE_ANON_KEY")
+    if not token:
+        return {}
+    return {
+        "Authorization": f"Bearer {token}",
+        "apikey": token,
+        "Content-Type": content_type,
+    }
+
+
+def _supabase_request(
+    env: Mapping[str, str],
+    path: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    content_type: str = "application/json",
+) -> tuple[int, str]:
+    base_url = normalize_url(_env_first(env, "SUPABASE_URL"))
+    request = Request(
+        urljoin(base_url, path.lstrip("/")),
+        data=body,
+        headers=_supabase_storage_headers(env, content_type=content_type),
+        method=method,
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace")
+
+
+def validate_supabase_storage_live(env: Mapping[str, str], bucket: str) -> list[ValidationResult]:
+    if not _bool_env(env, "SUPABASE_STORAGE_WRITE_APPROVED"):
+        return [
+            ValidationResult(
+                "supabase_storage_live_check",
+                "SKIP",
+                (
+                    "Set SUPABASE_STORAGE_WRITE_APPROVED=true plus SUPABASE_URL, "
+                    "SUPABASE_SERVICE_ROLE_KEY or SUPABASE_STORAGE_ACCESS_TOKEN, and the Supabase bucket vars "
+                    "to upload, verify, and delete a harmless staging object."
+                ),
+            )
+        ]
+    if not bucket:
+        return [ValidationResult("supabase_storage_live_check", "FAIL", "A Supabase quarantine or evidence bucket is required.")]
+    if not _env_first(env, "SUPABASE_URL"):
+        return [ValidationResult("supabase_storage_live_check", "FAIL", "SUPABASE_URL is required for the live Supabase Storage check.")]
+    if not _supabase_storage_headers(env):
+        return [
+            ValidationResult(
+                "supabase_storage_live_check",
+                "FAIL",
+                "SUPABASE_SERVICE_ROLE_KEY or SUPABASE_STORAGE_ACCESS_TOKEN is required for private Supabase Storage validation.",
+            )
+        ]
+    object_name = f"staging-readiness/{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-codex-smoke.txt"
+    encoded_bucket = quote(bucket, safe="")
+    encoded_object = quote(object_name, safe="/")
+    body = b"Supplier Intelligence Platform staging storage smoke test.\n"
+    try:
+        upload_status, upload_body = _supabase_request(
+            env,
+            f"/storage/v1/object/{encoded_bucket}/{encoded_object}",
+            method="POST",
+            body=body,
+            content_type="text/plain",
+        )
+        if upload_status not in {200, 201}:
+            return [
+                ValidationResult(
+                    "supabase_storage_live_check",
+                    "FAIL",
+                    f"Upload to Supabase Storage returned HTTP {upload_status}: {redact(upload_body)[:240]}",
+                )
+            ]
+        verify_status, _verify_body = _supabase_request(
+            env,
+            f"/storage/v1/object/{encoded_bucket}/{encoded_object}",
+            method="GET",
+        )
+        if verify_status != 200:
+            return [ValidationResult("supabase_storage_live_check", "FAIL", f"Verify read returned HTTP {verify_status}.")]
+        delete_body = json.dumps({"prefixes": [object_name]}).encode("utf-8")
+        delete_status, delete_response = _supabase_request(
+            env,
+            f"/storage/v1/object/{encoded_bucket}",
+            method="DELETE",
+            body=delete_body,
+        )
+        if delete_status not in {200, 204}:
+            return [
+                ValidationResult(
+                    "supabase_storage_live_check",
+                    "FAIL",
+                    f"Delete returned HTTP {delete_status}; manual cleanup may be required for prefix staging-readiness/: {redact(delete_response)[:240]}",
+                )
+            ]
+        return [
+            ValidationResult(
+                "supabase_storage_live_check",
+                "PASS",
+                f"Uploaded, verified, and deleted a harmless object in bucket={bucket}; malware scanning remains a separate control.",
+            )
+        ]
+    except (ValueError, URLError, TimeoutError) as exc:
+        return [ValidationResult("supabase_storage_live_check", "FAIL", f"Supabase Storage live check failed: {redact(exc)}")]
 
 
 def validate_render(env: Mapping[str, str]) -> list[ValidationResult]:

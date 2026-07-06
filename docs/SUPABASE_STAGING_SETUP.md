@@ -98,6 +98,56 @@ $env:SUPABASE_UPLOAD_CLEAN_BUCKET="supplier-uploads-clean-staging"
 The validator redacts secrets and performs read-only database checks only when
 `STAGING_DB_READONLY_APPROVED=true` is set.
 
+## UI + CORS Next Step
+
+The next manual Render setting is:
+
+```text
+CORS_ALLOW_ORIGINS=https://supplier-intelligence-ui-hut2.onrender.com
+```
+
+Manual validation sequence:
+
+1. Resume the Render UI service `supplier-intelligence-ui-hut2`.
+2. Open `https://supplier-intelligence-ui-hut2.onrender.com` and confirm the
+   Streamlit page loads.
+3. Set API service `CORS_ALLOW_ORIGINS` to
+   `https://supplier-intelligence-ui-hut2.onrender.com`.
+4. Redeploy the API service.
+5. Retest `/health` and `/ready`.
+6. Run the read-only UI/CORS smoke:
+
+```powershell
+$env:STAGING_UI_URL="https://supplier-intelligence-ui-hut2.onrender.com"
+$env:STAGING_API_URL="https://supplier-intelligence-api-hut2.onrender.com"
+.\venv\Scripts\python.exe scripts\smoke_ui_cors.py
+```
+
+The script verifies the UI page, API `/health`, and structured API `/ready`
+JSON. It does not require login credentials.
+
+## Optional Supabase Storage Live Check
+
+Bucket configuration is not the same as live object proof. The managed staging
+validator can perform a reversible live Supabase Storage check only when
+explicitly approved:
+
+```powershell
+$env:SUPABASE_STORAGE_WRITE_APPROVED="true"
+$env:SUPABASE_URL="<supabase-project-url>"
+$env:SUPABASE_SERVICE_ROLE_KEY="<backend-only-service-role-key>"
+$env:SUPPLIER_UPLOAD_STORAGE_PROVIDER="supabase"
+$env:SUPABASE_EVIDENCE_BUCKET="supplier-evidence-staging"
+$env:SUPABASE_UPLOAD_QUARANTINE_BUCKET="supplier-uploads-quarantine-staging"
+$env:SUPABASE_UPLOAD_CLEAN_BUCKET="supplier-uploads-clean-staging"
+.\venv\Scripts\python.exe scripts\validate_managed_staging.py
+```
+
+When approved, the validator uploads a harmless text object under a
+`staging-readiness/` prefix, reads it back, and deletes it. This proves live
+bucket access only. Malware scanning, quarantine workflow, and clean-bucket
+promotion remain separate controls.
+
 ## Readiness Label
 
 Use **Conditional go for managed staging** until CORS, OIDC, Supabase storage

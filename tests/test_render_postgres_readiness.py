@@ -273,3 +273,40 @@ def test_smoke_script_rejects_non_json_health_response(monkeypatch):
     monkeypatch.setattr(smoke, "request_json", fake_request)
 
     assert smoke.run_smoke("https://staging.example.com/", {}) == 1
+
+
+def test_ui_cors_smoke_skips_without_urls():
+    import scripts.smoke_ui_cors as smoke
+
+    results = smoke.run_ui_cors_smoke({})
+
+    assert {result.name for result in results} == {"staging_ui", "staging_api"}
+    assert all(result.status == "SKIP" for result in results)
+
+
+def test_ui_cors_smoke_checks_ui_health_and_ready_json(monkeypatch):
+    import scripts.smoke_ui_cors as smoke
+
+    calls: list[str] = []
+
+    def fake_request(url, *, headers=None, timeout=15):
+        del headers, timeout
+        calls.append(url)
+        if url.endswith("/health"):
+            return 200, "application/json", '{"status":"ok","database":{"ok":true,"driver":"postgresql+psycopg"}}'
+        if url.endswith("/ready"):
+            return 503, "application/json", '{"status":"degraded","production_issues":["OIDC missing"]}'
+        return 200, "text/html", "<html>Supplier Intelligence Platform</html>"
+
+    monkeypatch.setattr(smoke, "_request", fake_request)
+
+    results = smoke.run_ui_cors_smoke(
+        {
+            "STAGING_UI_URL": "https://supplier-intelligence-ui-hut2.onrender.com",
+            "STAGING_API_URL": "https://supplier-intelligence-api-hut2.onrender.com",
+        }
+    )
+
+    assert all(result.status == "PASS" for result in results)
+    assert any(url.endswith("/health") for url in calls)
+    assert any(url.endswith("/ready") for url in calls)

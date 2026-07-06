@@ -1,0 +1,40 @@
+{
+  "results": [
+    {
+      "name": "staging_api",
+      "status": "SKIP",
+      "detail": "STAGING_API_URL/STAGING_API_BASE_URL not configured."
+    },
+    {
+      "name": "postgres_readonly",
+      "status": "SKIP",
+      "detail": "POSTGRES_URL/DATABASE_URL/SUPPLIER_DATABASE_URL not configured."
+    },
+    {
+      "name": "postgres_backup_restore_drill",
+      "status": "SKIP",
+      "detail": "STAGING_BACKUP_RESTORE_APPROVED=true not set."
+    },
+    {
+      "name": "object_storage_config",
+      "status": "PASS",
+      "detail": "Supabase storage bucket configuration is complete; live bucket/object check must be captured separately."
+    },
+    {
+      "name": "supabase_storage_live_check",
+      "status": "SKIP",
+      "detail": "Set SUPABASE_STORAGE_WRITE_APPROVED=true plus SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY or SUPABASE_STORAGE_ACCESS_TOKEN, and the Supabase bucket vars to upload, verify, and delete a harmless staging object."
+    },
+    {
+      "name": "upload_scanner_config",
+      "status": "SKIP",
+      "detail": "Upload scanner environment variables are not configured."
+    },
+    {
+      "name": "render_service_evidence",
+      "status": "SKIP",
+      "detail": "RENDER_API_KEY/RENDER_SERVICE_ID not configured."
+    }
+  ],
+  "final_readiness_label": "Conditional go for managed staging"
+}
