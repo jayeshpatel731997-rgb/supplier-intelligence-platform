@@ -104,16 +104,29 @@ for a short staging window, set all of the following explicitly:
 Run after the Render deploy:
 
 ```powershell
-$env:STAGING_API_BASE_URL="https://supplier-intelligence-api.onrender.com"
+$env:STAGING_API_URL="https://supplier-intelligence-api.onrender.com"
+$env:STAGING_API_TOKEN="<short-lived-oidc-token>"
 $env:STAGING_UI_BASE_URL="https://supplier-intelligence-ui.onrender.com"
-$env:STAGING_BEARER_TOKEN="<short-lived-oidc-token>"
 $env:STAGING_EXPECTED_TENANT_ID="demo-tenant"
 python scripts/smoke_staging.py
+python scripts/validate_managed_staging.py
 ```
 
 Use the `supplier-intelligence-api` URL. The smoke script fails clearly if the
 base URL points at Streamlit and returns HTML fallback instead of FastAPI JSON or
 an API auth rejection.
+
+`scripts/smoke_staging.py` and `scripts/validate_managed_staging.py` both accept
+`STAGING_API_URL` and `STAGING_API_TOKEN`. `STAGING_API_BASE_URL` and
+`STAGING_BEARER_TOKEN` remain compatible aliases.
+
+`scripts/validate_managed_staging.py` is the broader evidence collector for
+managed staging. It accepts `STAGING_API_URL`, `STAGING_API_TOKEN`,
+`POSTGRES_URL`/`DATABASE_URL`, optional object-storage settings, optional Render
+service IDs, and scanner settings. It redacts tokens, database passwords, object
+storage keys, and Render credentials from output. Database checks are read-only
+and require `STAGING_DB_READONLY_APPROVED=true`; backup/restore evidence remains
+manual unless an explicitly disposable restore target is approved.
 
 Only for the approved local-auth exception, replace the bearer-token variables
 with:

@@ -70,7 +70,15 @@ def write_skip(name: str, artifact_dir: Path, reason: str) -> dict[str, object]:
 
 def tool_status() -> dict[str, str]:
     tools = ["docker", "pg_dump", "pg_restore", "psql", "trivy", "clamscan", "gh", "bash", "mypy", "pyright", "npm", "node"]
-    return {tool: shutil.which(tool) or "NOT_FOUND" for tool in tools}
+    status = {tool: shutil.which(tool) or "NOT_FOUND" for tool in tools}
+    try:
+        import importlib.util
+
+        for module in ["playwright", "streamlit", "boto3", "psycopg"]:
+            status[f"python:{module}"] = "available" if importlib.util.find_spec(module) else "NOT_FOUND"
+    except Exception:
+        status["python_module_probe"] = "failed"
+    return status
 
 
 def main() -> int:
@@ -91,6 +99,7 @@ def main() -> int:
         ("ruff", [str(ROOT / "venv" / "Scripts" / "ruff.exe") if os.name == "nt" else "ruff", "check", "."], 300),
         ("secret_leakage", [python, "scripts/check_secret_leakage.py"], 300),
         ("local_api_smoke", [python, "scripts/local_smoke.py"], 180),
+        ("managed_staging_validation", [python, "scripts/validate_managed_staging.py"], 240),
         ("render_yaml_parse", [python, "-c", "import pathlib,yaml; [yaml.safe_load(pathlib.Path(p).read_text()) for p in ('render.yaml','render.full.yaml','docker-compose.yml')]; print('deployment YAML parsed')"], 120),
         ("render_startup_shell_syntax", ["bash", "-n", "scripts/start_api_render.sh", "scripts/start_ui_render.sh"], 120),
     ]
@@ -103,9 +112,20 @@ def main() -> int:
         checks.append(("clamscan_repo", ["clamscan", "-r", "--exclude-dir=venv", "."], 600))
     if shutil.which("gh"):
         checks.append(("github_latest_ci", ["gh", "run", "list", "--branch", "codex/evidence-chain-platform-hardening", "--limit", "3", "--json", "databaseId,headSha,status,conclusion,name,url,createdAt"], 120))
+    package_json_present = (ROOT / "package.json").exists()
+    if package_json_present:
+        checks.append(("frontend_npm_install_check", ["npm", "install", "--dry-run"], 180))
 
     results = [run_command(name, command, artifact_dir, timeout) for name, command, timeout in checks]
-    if os.getenv("STAGING_API_BASE_URL") or os.getenv("STAGING_BASE_URL"):
+    if not package_json_present:
+        results.append(
+            write_skip(
+                "frontend_checks",
+                artifact_dir,
+                "package.json not present; no frontend npm checks configured.",
+            )
+        )
+    if os.getenv("STAGING_API_URL") or os.getenv("STAGING_API_BASE_URL") or os.getenv("STAGING_BASE_URL"):
         results.append(
             run_command(
                 "staging_smoke_health_only",
@@ -128,6 +148,13 @@ def main() -> int:
             "postgres_backup_restore_drill",
             artifact_dir,
             "No approved staging/disposable Postgres URL was configured and Docker is unavailable; real backup/restore drill not attempted.",
+        )
+    )
+    results.append(
+        write_skip(
+            "browser_screenshots",
+            artifact_dir,
+            "Browser automation is not installed in the local virtualenv; screenshots were not captured.",
         )
     )
 
@@ -161,6 +188,7 @@ def main() -> int:
             "",
             "- Repository-local tests, lint, compile, and secret scan results are captured when commands pass.",
             "- Deployment YAML parsing and Render startup shell syntax are captured.",
+            "- Managed staging validation records API, Postgres, object storage, scanner, and Render evidence when corresponding credentials are configured.",
             "- GitHub CI status is captured when GitHub CLI is available.",
             "",
             "## What Is Mocked Or Staging-Safe",

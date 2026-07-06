@@ -44,11 +44,14 @@ Capture screenshots or exported logs for:
 1. Confirm commit SHA and branch.
 2. Confirm Render API URL and Streamlit UI URL.
 3. Run `scripts/smoke_staging.py` with a short-lived OIDC token.
-4. Verify unauthenticated protected routes reject access.
-5. Verify authenticated tenant-scoped supplier read.
-6. Verify `X-Tenant-ID` override cannot cross tenant boundaries in OIDC mode.
-7. Verify connector sync, evidence-chain run, action update, and scoring config.
-8. Confirm smoke logs redact secrets.
+4. Run `scripts/validate_managed_staging.py` with `STAGING_API_URL`,
+   `STAGING_API_TOKEN`, `STAGING_EXPECTED_TENANT_ID`, and any approved Postgres,
+   object-storage, scanner, or Render evidence variables.
+5. Verify unauthenticated protected routes reject access.
+6. Verify authenticated tenant-scoped supplier read.
+7. Verify `X-Tenant-ID` override cannot cross tenant boundaries in OIDC mode.
+8. Verify connector sync, evidence-chain run, action update, and scoring config.
+9. Confirm smoke logs redact secrets.
 
 ## Backup/Restore Checklist
 

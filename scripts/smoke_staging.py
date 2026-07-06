@@ -48,7 +48,11 @@ def normalize_base_url(value: str) -> str:
 
 
 def staging_base_url(env: Mapping[str, str]) -> str:
-    return env.get("STAGING_API_BASE_URL", "").strip() or env.get("STAGING_BASE_URL", "").strip()
+    return (
+        env.get("STAGING_API_URL", "").strip()
+        or env.get("STAGING_API_BASE_URL", "").strip()
+        or env.get("STAGING_BASE_URL", "").strip()
+    )
 
 
 def staging_ui_base_url(env: Mapping[str, str]) -> str:
@@ -56,7 +60,7 @@ def staging_ui_base_url(env: Mapping[str, str]) -> str:
 
 
 def auth_headers(env: Mapping[str, str]) -> dict[str, str]:
-    token = env.get("STAGING_BEARER_TOKEN", "").strip()
+    token = env.get("STAGING_API_TOKEN", "").strip() or env.get("STAGING_BEARER_TOKEN", "").strip()
     if token:
         return {"Authorization": f"Bearer {token}"}
     tenant_id = env.get("STAGING_TENANT_ID", "").strip()
@@ -80,9 +84,9 @@ def configuration_errors(
 ) -> list[str]:
     errors: list[str] = []
     if not staging_base_url(env):
-        errors.append("set STAGING_API_BASE_URL to the FastAPI service URL")
+        errors.append("set STAGING_API_URL or STAGING_API_BASE_URL to the FastAPI service URL")
     if not health_only and not headers:
-        errors.append("set STAGING_BEARER_TOKEN for OIDC, or STAGING_TENANT_ID and STAGING_API_KEY for an approved local-auth exception")
+        errors.append("set STAGING_API_TOKEN or STAGING_BEARER_TOKEN for OIDC, or STAGING_TENANT_ID and STAGING_API_KEY for an approved local-auth exception")
     if not health_only and "Authorization" in headers and not expected_tenant_id(env, headers):
         errors.append("set STAGING_EXPECTED_TENANT_ID so the OIDC tenant boundary can be verified")
     if not skip_ui and not staging_ui_base_url(env):
