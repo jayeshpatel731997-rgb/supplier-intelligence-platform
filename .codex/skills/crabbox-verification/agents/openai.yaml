@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crabbox Verification"
+  short_description: "Plan safe heavy verification with Crabbox"
+  default_prompt: "Use $crabbox-verification to decide whether this change needs heavy remote verification and define a safe proof run."

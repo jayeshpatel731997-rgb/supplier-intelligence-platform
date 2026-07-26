@@ -1,0 +1,4 @@
+interface:
+  display_name: "Convex Integration Review"
+  short_description: "Review Convex and SQLAlchemy mode separation"
+  default_prompt: "Use $convex-integration-review to assess Convex schema, functions, configuration fallback, and database mode boundaries."

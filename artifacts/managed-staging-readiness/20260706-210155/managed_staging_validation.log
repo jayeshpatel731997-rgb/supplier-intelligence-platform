@@ -1,0 +1,60 @@
+{
+  "results": [
+    {
+      "name": "staging_api_live",
+      "status": "PASS",
+      "detail": "HTTP 200; request_id_present=False; payload={'status': 'alive'}"
+    },
+    {
+      "name": "staging_api_health",
+      "status": "PASS",
+      "detail": "HTTP 200; payload={'status': 'ok', 'database': {'ok': True, 'driver': 'postgresql+psycopg', 'url': 'postgresql+psycopg://***:***@aws-0-us-east-1.pooler.supabase.com:5432/postgres'}, 'backend': {'requested': 'sqlalchemy', 'active': 'sqlalchemy', 'fallback': False}, 'api': {'ok': True, 'status': 'ready'}}"
+    },
+    {
+      "name": "staging_api_ready",
+      "status": "PASS",
+      "detail": "HTTP 503; degraded_expected=True; payload={'status': 'degraded', 'database': {'ok': True, 'driver': 'postgresql+psycopg', 'url': 'postgresql+psycopg://***:***@aws-0-us-east-1.pooler.supabase.com:5432/postgres'}, 'backend': {'requested': 'sqlalchemy', 'active': 'sqlalchemy', 'fallback': False}, 'api': {'ok': True, 'status': 'ready'}, 'auth': {'provider': 'oidc', 'mfa_required': False, 'scim_enabled': False}, 'connectors': {'mode': 'demo', 'stub_available': True, 'public_available': True, 'last_sync_status': 'unknown'}, 'scoring_config': {'available': True, 'version': 'default-v1'}, 'convex': {'configured': False, 'status': 'not_configured'}, 'llm_narrative': {'provider': 'none', 'configured': True, 'available': True, 'status': 'deterministic', 'fallback': 'deterministic'}, 'production_issues': ['OIDC_ISSUER_URL is required in staging/production OIDC mode.', 'OIDC_CLIENT_ID is required in staging/production OIDC mode.', 'OIDC_CLIENT_SECRET is required in staging/production OIDC mode.', 'OIDC_AUDIENCE or OIDC_CLIENT_ID is required in staging/production OIDC mode.', 'OIDC_JWKS_URL is required in staging/production OIDC mode.'], 'status_error': ''}"
+    },
+    {
+      "name": "staging_api_auth_rejection",
+      "status": "PASS",
+      "detail": "HTTP 401; payload={'detail': 'Authorization Bearer token is required.'}"
+    },
+    {
+      "name": "staging_api_authenticated_status",
+      "status": "SKIP",
+      "detail": "STAGING_API_TOKEN/STAGING_BEARER_TOKEN not configured."
+    },
+    {
+      "name": "postgres_readonly",
+      "status": "SKIP",
+      "detail": "POSTGRES_URL/DATABASE_URL/SUPPLIER_DATABASE_URL not configured."
+    },
+    {
+      "name": "postgres_backup_restore_drill",
+      "status": "SKIP",
+      "detail": "STAGING_BACKUP_RESTORE_APPROVED=true not set."
+    },
+    {
+      "name": "object_storage_config",
+      "status": "PASS",
+      "detail": "Supabase storage bucket configuration is complete; live bucket/object check must be captured separately."
+    },
+    {
+      "name": "supabase_storage_live_check",
+      "status": "SKIP",
+      "detail": "Set SUPABASE_STORAGE_WRITE_APPROVED=true plus SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY or SUPABASE_STORAGE_ACCESS_TOKEN, and the Supabase bucket vars to upload, verify, and delete a harmless staging object."
+    },
+    {
+      "name": "upload_scanner_config",
+      "status": "SKIP",
+      "detail": "Upload scanner environment variables are not configured."
+    },
+    {
+      "name": "render_service_evidence",
+      "status": "SKIP",
+      "detail": "RENDER_API_KEY/RENDER_SERVICE_ID not configured."
+    }
+  ],
+  "final_readiness_label": "Staging-ready with mocks for external controls"
+}

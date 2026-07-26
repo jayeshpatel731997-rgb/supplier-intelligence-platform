@@ -1,0 +1,4 @@
+interface:
+  display_name: "Secret Leakage Review"
+  short_description: "Scan project surfaces for secret disclosure"
+  default_prompt: "Use $secret-leakage-review to inspect docs, logs, readiness output, env examples, and tests for leaked secrets."

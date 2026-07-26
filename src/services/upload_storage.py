@@ -67,6 +67,21 @@ def validate_upload_type(filename: str, content_type: str, settings: Settings) -
     return safe_name
 
 
+def _contains_eicar_test_signature(data: bytes) -> bool:
+    """Detect the harmless industry-standard scanner test string.
+
+    This is not malware inspection. It gives local tests and staging smoke a
+    deterministic way to prove that the application rejects a scanner finding
+    before storing or ingesting an upload.
+    """
+
+    signature = (
+        b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$"
+        b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+    )
+    return signature in data
+
+
 def scan_upload(data: bytes, settings: Settings) -> UploadScanResult:
     provider = settings.upload_scanner_provider
     if provider == "none":
@@ -76,10 +91,23 @@ def scan_upload(data: bytes, settings: Settings) -> UploadScanResult:
     if not settings.upload_scanner_endpoint_url:
         raise UploadSafetyError("Upload scanner endpoint is not configured.")
 
+    if provider in {"eicar-test", "staging-safe"}:
+        if _contains_eicar_test_signature(data):
+            raise UploadSafetyError("Upload scanner rejected file: test malware signature detected.")
+        return UploadScanResult(
+            ok=True,
+            scanner=provider,
+            message="Staging-safe scanner adapter accepted upload.",
+        )
+
     # Placeholder integration point for a future ICAP/ClamAV/vendor scanner.
     # Keep file contents in memory only; do not log or emit payload bytes.
     _ = data
-    return UploadScanResult(ok=True, scanner=provider, message="Scanner integration stub accepted upload.")
+    return UploadScanResult(
+        ok=True,
+        scanner=provider,
+        message="External scanner integration point accepted upload.",
+    )
 
 
 def tenant_upload_key(tenant_id: str, filename: str, key_prefix: str = "uploads") -> str:

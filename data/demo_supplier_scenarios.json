@@ -1,0 +1,56 @@
+[
+  {
+    "scenario": "normal_supplier",
+    "supplier_id": "demo-normal-1",
+    "supplier_name": "Northstar Fasteners",
+    "country": "USA",
+    "category": "Fasteners",
+    "risk_score": 18,
+    "story": "Stable supplier with normal delivery and quality signals."
+  },
+  {
+    "scenario": "financial_distress",
+    "supplier_id": "demo-finance-1",
+    "supplier_name": "Apex Castings",
+    "country": "USA",
+    "category": "Castings",
+    "risk_score": 78,
+    "story": "Financial weak signals indicate liquidity pressure."
+  },
+  {
+    "scenario": "logistics_disruption",
+    "supplier_id": "demo-logistics-1",
+    "supplier_name": "Pacific Harness",
+    "country": "Vietnam",
+    "category": "Wire Harness",
+    "risk_score": 66,
+    "story": "Port and lane disruption threatens lead times."
+  },
+  {
+    "scenario": "hiring_slowdown",
+    "supplier_id": "demo-hiring-1",
+    "supplier_name": "Metro Machining",
+    "country": "Mexico",
+    "category": "Machining",
+    "risk_score": 58,
+    "story": "Hiring slowdown could constrain capacity."
+  },
+  {
+    "scenario": "compliance_issue",
+    "supplier_id": "demo-compliance-1",
+    "supplier_name": "Riverbend Chemicals",
+    "country": "USA",
+    "category": "Chemicals",
+    "risk_score": 63,
+    "story": "Audit/compliance finding requires corrective action."
+  },
+  {
+    "scenario": "multi_signal_high_risk",
+    "supplier_id": "demo-multi-1",
+    "supplier_name": "Global Electronics Subtier",
+    "country": "Taiwan",
+    "category": "Electronics",
+    "risk_score": 91,
+    "story": "Multiple financial, logistics, and hiring signals indicate high risk."
+  }
+]

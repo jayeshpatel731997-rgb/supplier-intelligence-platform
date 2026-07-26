@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Governance Review"
+  short_description: "Constrain narratives to structured evidence"
+  default_prompt: "Use $llm-governance-review to verify evidence-grounded LLM narratives, deterministic fallback, and claim controls."

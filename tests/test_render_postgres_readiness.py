@@ -62,7 +62,7 @@ def test_render_blueprints_use_alembic_without_create_all_fallback():
     for blueprint in ("render.yaml", "render.full.yaml"):
         text = (ROOT / blueprint).read_text(encoding="utf-8")
 
-        assert "python scripts/migrate.py" in text
+        assert "dockerCommand: sh scripts/start_api_render.sh" in text
         assert "--create-all-fallback" not in text
         assert "healthCheckPath: /live" in text
 
@@ -73,11 +73,55 @@ def test_render_blueprints_keep_api_and_ui_services_separate():
 
         assert "name: supplier-intelligence-api" in text
         assert "dockerfilePath: ./backend/Dockerfile" in text
-        assert "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}" in text
+        assert "dockerCommand: sh scripts/start_api_render.sh" in text
         assert "name: supplier-intelligence-ui" in text
         assert "dockerfilePath: ./Dockerfile" in text
-        assert "streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0" in text
+        assert "dockerCommand: sh scripts/start_ui_render.sh" in text
         assert "healthCheckPath: /_stcore/health" in text
+
+
+def test_render_blueprints_default_to_supabase_storage_buckets():
+    for blueprint in ("render.yaml", "render.full.yaml"):
+        text = (ROOT / blueprint).read_text(encoding="utf-8")
+
+        assert "key: SUPPLIER_UPLOAD_STORAGE_PROVIDER" in text
+        assert "value: supabase" in text
+        assert "key: SUPABASE_EVIDENCE_BUCKET" in text
+        assert "key: SUPABASE_UPLOAD_QUARANTINE_BUCKET" in text
+        assert "key: SUPABASE_UPLOAD_CLEAN_BUCKET" in text
+
+
+def test_render_startup_scripts_use_exec_and_render_port():
+    api_script = (ROOT / "scripts" / "start_api_render.sh").read_text(encoding="utf-8")
+    ui_script = (ROOT / "scripts" / "start_ui_render.sh").read_text(encoding="utf-8")
+
+    assert api_script.startswith("#!/usr/bin/env sh\nset -e\n")
+    assert "python scripts/migrate.py" in api_script
+    assert 'exec uvicorn backend.main:app --host 0.0.0.0 --port "${PORT:-10000}"' in api_script
+    assert ui_script.startswith("#!/usr/bin/env sh\nset -e\n")
+    assert 'exec streamlit run app.py --server.port="${PORT:-10000}" --server.address=0.0.0.0' in ui_script
+
+
+def test_render_web_services_do_not_embed_quoted_shell_commands():
+    for blueprint in ("render.yaml", "render.full.yaml"):
+        text = (ROOT / blueprint).read_text(encoding="utf-8")
+
+        assert 'dockerCommand: /bin/sh -c "python scripts/migrate.py && uvicorn' not in text
+        assert 'dockerCommand: /bin/sh -c "streamlit run app.py' not in text
+
+
+def test_render_runbook_matches_blueprint_auth_and_resource_truth():
+    blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
+    runbook = (ROOT / "RENDER_STAGING_RUNBOOK.md").read_text(encoding="utf-8")
+
+    assert "name: supplier-intelligence-api" in blueprint
+    assert "name: supplier-intelligence-ui" in blueprint
+    assert "name: supplier-intelligence-postgres" in blueprint
+    assert "API + Streamlit + Postgres" in runbook
+    assert "does not generate" in runbook
+    assert "`SUPPLIER_DEMO_API_KEY`" in runbook
+    assert "STAGING_BEARER_TOKEN" in runbook
+    assert "STAGING_UI_BASE_URL" in runbook
 
 
 def test_smoke_script_redacts_secret_like_values():
@@ -91,6 +135,36 @@ def test_smoke_script_redacts_secret_like_values():
     assert "***" in text
 
 
+def test_smoke_script_redacts_cookie_and_client_secret_values():
+    import scripts.smoke_staging as smoke
+
+    text = smoke.redact("Cookie: session=private-value client_secret=private-client-value")
+
+    assert "private-value" not in text
+    assert "private-client-value" not in text
+    assert "***" in text
+
+
+def test_smoke_script_summaries_omit_database_urls_and_evidence_payloads():
+    import scripts.smoke_staging as smoke
+
+    response = smoke.SmokeResponse(
+        200,
+        (
+            '{"status":"completed","run_id":"run-1","database":'
+            '{"ok":true,"driver":"postgresql+psycopg","url":"postgresql://hidden"},'
+            '"suppliers":[{"supplier_name":"Confidential Supplier"}]}'
+        ),
+        "application/json",
+    )
+
+    summary = smoke._json_summary(response)
+
+    assert "run-1" in summary
+    assert "postgresql://hidden" not in summary
+    assert "Confidential Supplier" not in summary
+
+
 def test_smoke_script_builds_auth_headers_without_printing_values(monkeypatch):
     monkeypatch.setenv("STAGING_TENANT_ID", "tenant-a")
     monkeypatch.setenv("STAGING_API_KEY", "api-key-value")
@@ -101,6 +175,66 @@ def test_smoke_script_builds_auth_headers_without_printing_values(monkeypatch):
     headers = smoke.auth_headers(os.environ)
 
     assert headers == {"X-Tenant-ID": "tenant-a", "X-API-Key": "api-key-value"}
+
+
+def test_smoke_script_prefers_staging_api_base_url_alias():
+    import scripts.smoke_staging as smoke
+
+    assert (
+        smoke.staging_base_url(
+            {
+                "STAGING_API_BASE_URL": "https://api.example.test",
+                "STAGING_BASE_URL": "https://legacy.example.test",
+            }
+        )
+        == "https://api.example.test"
+    )
+    assert smoke.staging_base_url({"STAGING_BASE_URL": "https://legacy.example.test"}) == "https://legacy.example.test"
+
+
+def test_smoke_script_preflight_requires_oidc_tenant_and_ui_urls():
+    import scripts.smoke_staging as smoke
+
+    env = {
+        "STAGING_API_BASE_URL": "https://api.example.test",
+        "STAGING_BEARER_TOKEN": "not-printed",
+    }
+    headers = smoke.auth_headers(env)
+
+    errors = smoke.configuration_errors(env, headers, health_only=False, skip_ui=False)
+
+    assert any("STAGING_EXPECTED_TENANT_ID" in error for error in errors)
+    assert any("STAGING_UI_BASE_URL" in error for error in errors)
+    assert all("not-printed" not in error for error in errors)
+
+
+def test_smoke_script_checks_oidc_tenant_header_override(monkeypatch):
+    import scripts.smoke_staging as smoke
+
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_request(base_url, path, headers=None, timeout=10, method="GET", payload=None):
+        del base_url, timeout, method, payload
+        active_headers = dict(headers or {})
+        calls.append((path, active_headers))
+        if path == "/system/status":
+            return smoke.SmokeResponse(
+                200,
+                '{"tenant_id":"tenant-a","status":"ok"}',
+                "application/json",
+            )
+        return smoke.SmokeResponse(200, "{}", "application/json")
+
+    monkeypatch.setattr(smoke, "request_json", fake_request)
+
+    checks = smoke._tenant_isolation_checks(
+        "https://api.example.test/",
+        {"Authorization": "Bearer hidden"},
+        "tenant-a",
+    )
+
+    assert all(ok for _name, ok, _detail in checks)
+    assert any(headers.get("X-Tenant-ID") == "cross-tenant-smoke-probe" for _path, headers in calls)
 
 
 def test_smoke_script_rejects_streamlit_html_fallback(monkeypatch):
@@ -139,3 +273,90 @@ def test_smoke_script_rejects_non_json_health_response(monkeypatch):
     monkeypatch.setattr(smoke, "request_json", fake_request)
 
     assert smoke.run_smoke("https://staging.example.com/", {}) == 1
+
+
+def test_smoke_script_allows_expected_degraded_ready(monkeypatch):
+    import scripts.smoke_staging as smoke
+
+    def fake_request(_base_url, path, headers=None, timeout=10, method="GET", payload=None):
+        del headers, timeout, method, payload
+        if path == "/ready":
+            return smoke.SmokeResponse(
+                status=503,
+                body='{"status":"degraded","production_issues":["OIDC missing"]}',
+                content_type="application/json",
+            )
+        if path == "/suppliers":
+            return smoke.SmokeResponse(status=401, body='{"detail":"auth required"}', content_type="application/json")
+        return smoke.SmokeResponse(status=200, body='{"status":"ok"}', content_type="application/json")
+
+    monkeypatch.setattr(smoke, "request_json", fake_request)
+
+    assert smoke.run_smoke("https://staging.example.com/", {}, health_only=True, ready_degraded_expected=True) == 0
+
+
+def test_ui_cors_smoke_skips_without_urls():
+    import scripts.smoke_ui_cors as smoke
+
+    results = smoke.run_ui_cors_smoke({})
+
+    assert {result.name for result in results} == {"staging_ui", "staging_api"}
+    assert all(result.status == "SKIP" for result in results)
+
+
+def test_ui_cors_smoke_checks_ui_health_and_ready_json(monkeypatch):
+    import scripts.smoke_ui_cors as smoke
+
+    calls: list[str] = []
+
+    def fake_request(url, *, headers=None, timeout=15, method="GET"):
+        del timeout
+        calls.append(url)
+        if method == "OPTIONS":
+            return 200, "", "", {"Access-Control-Allow-Origin": headers["Origin"]}
+        if url.endswith("/health"):
+            return 200, "application/json", '{"status":"ok","database":{"ok":true,"driver":"postgresql+psycopg"}}', {}
+        if url.endswith("/ready"):
+            return 503, "application/json", '{"status":"degraded","production_issues":["OIDC missing"]}', {}
+        return 200, "text/html", "<html>Supplier Intelligence Platform</html>", {}
+
+    monkeypatch.setattr(smoke, "_request", fake_request)
+
+    results = smoke.run_ui_cors_smoke(
+        {
+            "STAGING_UI_URL": "https://supplier-intelligence-ui-hut2.onrender.com",
+            "STAGING_API_URL": "https://supplier-intelligence-api-hut2.onrender.com",
+        }
+    )
+
+    assert all(result.status == "PASS" for result in results)
+    assert {result.name for result in results} == {
+        "staging_ui_page",
+        "staging_api_health",
+        "staging_api_ready_structure",
+        "staging_api_cors_preflight",
+    }
+    assert any(url.endswith("/health") for url in calls)
+    assert any(url.endswith("/ready") for url in calls)
+
+
+def test_ui_cors_smoke_warns_when_preflight_origin_is_missing(monkeypatch):
+    import scripts.smoke_ui_cors as smoke
+
+    def fake_request(url, *, headers=None, timeout=15, method="GET"):
+        del url, headers, timeout
+        if method == "OPTIONS":
+            return 200, "", "", {}
+        return 200, "application/json", '{"status":"ok"}', {}
+
+    monkeypatch.setattr(smoke, "_request", fake_request)
+
+    results = smoke.run_ui_cors_smoke(
+        {
+            "STAGING_UI_URL": "https://supplier-intelligence-ui-hut2.onrender.com",
+            "STAGING_API_URL": "https://supplier-intelligence-api-hut2.onrender.com",
+        }
+    )
+
+    cors = next(result for result in results if result.name == "staging_api_cors_preflight")
+    assert cors.status == "WARN"

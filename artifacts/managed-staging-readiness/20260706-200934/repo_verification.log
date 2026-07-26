@@ -1,0 +1,14 @@
+## codex/evidence-chain-platform-hardening...origin/codex/evidence-chain-platform-hardening
+ M .env.example
+ M RENDER_ENV_CHECKLIST.md
+ M docs/MANAGED_STAGING_EVIDENCE_PACK.md
+ M docs/PRODUCTION_READINESS_STATUS.md
+ M docs/SUPABASE_STAGING_SETUP.md
+ M render.full.yaml
+ M render.yaml
+ M scripts/collect_managed_staging_evidence.py
+ M scripts/validate_managed_staging.py
+ M src/config.py
+ M tests/test_managed_staging_validation.py
+ M tests/test_production_foundation.py
+?? docs/SUPABASE_SECURITY_MODEL.md

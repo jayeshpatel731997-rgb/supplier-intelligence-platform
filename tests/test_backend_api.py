@@ -282,6 +282,47 @@ def test_upload_rejects_files_over_configured_limit(monkeypatch, tmp_path):
     assert "Upload exceeds" in response.json()["detail"]
 
 
+def test_upload_scanner_rejects_eicar_test_signature(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUPPLIER_UPLOAD_SCANNER_PROVIDER", "eicar-test")
+    monkeypatch.setenv("SUPPLIER_UPLOAD_SCANNER_ENDPOINT_URL", "local-eicar-test-adapter")
+    client = _client(monkeypatch, tmp_path)
+    eicar_signature = (
+        b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$"
+        b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+    )
+
+    response = client.post(
+        "/ingestion/upload",
+        files={"file": ("suppliers.csv", b"Supplier\nApex\n" + eicar_signature, "text/csv")},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 400
+    assert "Upload scanner rejected file" in response.json()["detail"]
+
+
+def test_upload_scanner_staging_adapter_allows_clean_upload(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUPPLIER_UPLOAD_STORAGE_PATH", str(tmp_path / "uploads"))
+    monkeypatch.setenv("SUPPLIER_UPLOAD_SCANNER_PROVIDER", "eicar-test")
+    monkeypatch.setenv("SUPPLIER_UPLOAD_SCANNER_ENDPOINT_URL", "local-eicar-test-adapter")
+    client = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/ingestion/upload",
+        files={
+            "file": (
+                "suppliers.csv",
+                b"Supplier,Country,Annual Spend\nClean Supplier,USA,1000",
+                "text/csv",
+            )
+        },
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+
 def test_ready_reports_503_when_production_upload_storage_config_is_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("SUPPLIER_SECURITY_MODE", "production")
     monkeypatch.setenv("SUPPLIER_DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}")

@@ -1,0 +1,1 @@
+SKIPPED: No approved staging/disposable Postgres URL was configured and Docker is unavailable; real backup/restore drill not attempted.

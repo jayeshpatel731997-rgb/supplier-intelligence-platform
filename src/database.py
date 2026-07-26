@@ -62,6 +62,13 @@ def _ensure_sqlite_compat_columns(engine: Engine) -> None:
         "supplier_risk_scores",
         "news_events",
         "supplier_event_matches",
+        "supplier_weak_signals",
+        "supplier_evidence_scoring_versions",
+        "supplier_evidence_runs",
+        "supplier_evidence_run_suppliers",
+        "supplier_evidence_actions",
+        "supplier_connector_syncs",
+        "supplier_historical_outcomes",
         "scenario_runs",
         "financial_exposure_runs",
         "alerts",
@@ -90,6 +97,15 @@ def _ensure_sqlite_compat_columns(engine: Engine) -> None:
             for column_name, ddl in extra_columns.items():
                 if column_name not in columns:
                     conn.execute(text(f"ALTER TABLE background_job_runs ADD COLUMN {column_name} {ddl}"))
+        if "supplier_connector_syncs" in existing_tables:
+            columns = {column["name"] for column in inspector.get_columns("supplier_connector_syncs")}
+            extra_columns = {
+                "started_at": "DATETIME",
+                "finished_at": "DATETIME",
+            }
+            for column_name, ddl in extra_columns.items():
+                if column_name not in columns:
+                    conn.execute(text(f"ALTER TABLE supplier_connector_syncs ADD COLUMN {column_name} {ddl}"))
 
 
 @contextmanager

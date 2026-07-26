@@ -1,0 +1,4 @@
+interface:
+  display_name: "Connector Integration Hardening"
+  short_description: "Review connector resilience and safe failures"
+  default_prompt: "Use $connector-integration-hardening to review external connectors, retries, timeouts, sync history, and failure behavior."

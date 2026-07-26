@@ -18,6 +18,34 @@ A unified platform that combines quantitative risk modeling with supplier perfor
 - Run near-real-time scheduled Sentinel/risk/exposure refresh jobs with a local scheduler or worker process
 - Scope SaaS data by tenant using tenant API keys in local/demo mode or verified OIDC bearer tokens in OIDC mode
 
+## Professor Demo And Managed-Staging Evidence
+
+For a short academic/professional walkthrough, start with
+[`docs/PROFESSOR_DEMO_GUIDE.md`](docs/PROFESSOR_DEMO_GUIDE.md). The simplest
+talk track is:
+
+- "This is a supplier intelligence and risk platform."
+- "It detects weak signals."
+- "It preserves evidence chains."
+- "It recommends actions."
+- "It is staging-ready only after external controls are validated."
+
+The current readiness label is **Conditional go for managed staging**. The repo
+has strong local/CI evidence, but real production controls still require
+external validation. Generate a timestamped evidence pack with:
+
+```bash
+python scripts/collect_managed_staging_evidence.py
+```
+
+The report is written under
+`artifacts/managed-staging-readiness/YYYYMMDD-HHMMSS/`. See
+[`docs/MANAGED_STAGING_EVIDENCE_PACK.md`](docs/MANAGED_STAGING_EVIDENCE_PACK.md),
+[`docs/STREAMLIT_OIDC_BROWSER_AUTH.md`](docs/STREAMLIT_OIDC_BROWSER_AUTH.md),
+[`docs/UPLOAD_SCANNING_STAGING_REQUIREMENTS.md`](docs/UPLOAD_SCANNING_STAGING_REQUIREMENTS.md),
+and [`docs/OBSERVABILITY_AND_RUNBOOK.md`](docs/OBSERVABILITY_AND_RUNBOOK.md)
+for the evidence boundaries.
+
 ## Architecture
 
 | Module | Method | Purpose |
@@ -98,7 +126,7 @@ Health endpoints:
 
 - `/live` returns a lightweight process liveness response and does not require database initialization.
 - `/health` includes database and API state and reports `degraded` instead of crashing when database-backed status queries fail.
-- `/ready` is the traffic gate: it returns HTTP `200` only when startup initialization, database checks, and production runtime checks pass; otherwise it returns HTTP `503` with `status: degraded`.
+- `/ready` is the traffic gate: it returns HTTP `200` only when startup initialization, database checks, and production runtime checks pass; otherwise it returns HTTP `503` with `status: degraded`. It also reports database/backend mode, auth posture, connector mode, scoring config status, Convex configured/not-configured status, and governed narrative mode without exposing secret values.
 - In production mode, readiness also blocks wildcard CORS, incomplete OIDC/JWKS/SAML configuration, missing schema/migrations, and other unsafe runtime defaults. API and worker startup do not auto-create production schema; run Alembic first.
 - `/system/status` is protected and adds worker, Sentinel, auth, rate limit, retention, SIEM, and production configuration checks.
 
@@ -140,6 +168,19 @@ The compose stack keeps them separate: `streamlit` builds the root `Dockerfile`
 and runs `streamlit run app.py`; `backend` builds `backend/Dockerfile` and runs
 `uvicorn backend.main:app`.
 
+Seed deterministic local demo data:
+
+```bash
+python scripts/seed_demo_data.py --tenant-id demo-tenant
+```
+
+The seed is idempotent and creates demo suppliers, weak signals, connector sync
+metadata, scoring config, an evidence-chain run, actions, and historical
+outcome examples without requiring external APIs. For OIDC staging, set
+`SUPPLIER_STAGING_SEED_USERNAME` to the token subject or verified email before
+running the seed; it creates a `risk_manager` membership without creating a
+staging API key.
+
 Render staging:
 
 ```bash
@@ -154,8 +195,11 @@ https://dashboard.render.com/blueprint/new?repo=https://github.com/jayeshpatel73
 ```
 
 The default `render.yaml` creates separate Render web services:
-`supplier-intelligence-api` runs FastAPI with `uvicorn backend.main:app`, and
-`supplier-intelligence-ui` runs Streamlit with `streamlit run app.py`.
+`supplier-intelligence-api` runs `sh scripts/start_api_render.sh`, which applies
+migrations and then starts FastAPI, and `supplier-intelligence-ui` runs
+`sh scripts/start_ui_render.sh`, which starts Streamlit. The scripts use
+Render's `PORT` with a `10000` fallback and avoid quoted multi-command Docker
+overrides.
 `render.full.yaml` keeps the same API/UI split and adds Redis, worker, and cron
 services. See `RENDER_STAGING_RUNBOOK.md` for the exact staging launch checklist.
 Real Render staging runs with `SUPPLIER_SECURITY_MODE=production`,
@@ -166,13 +210,40 @@ process health check; `/ready` is the API configuration and database traffic gat
 Smoke test staging after deploy:
 
 ```bash
-set STAGING_BASE_URL=https://supplier-intelligence-api.onrender.com
+set STAGING_API_BASE_URL=https://supplier-intelligence-api.onrender.com
+set STAGING_UI_BASE_URL=https://supplier-intelligence-ui.onrender.com
+set STAGING_BEARER_TOKEN=<short-lived-oidc-token>
+set STAGING_EXPECTED_TENANT_ID=demo-tenant
 python scripts/smoke_staging.py
 ```
 
-Use the FastAPI service URL for `STAGING_BASE_URL`. If this accidentally points
+Use the FastAPI service URL for `STAGING_API_BASE_URL`; `STAGING_BASE_URL`
+remains a compatible alias. If this accidentally points
 at the Streamlit UI service, the smoke script fails when it sees HTML fallback
-instead of API JSON/auth responses.
+instead of API JSON/auth responses. With auth configured, the smoke script also
+runs tenant-boundary, connector sync, evidence-chain run, action update, and
+scoring-config checks. Credentials and the Streamlit URL are required by default
+so workflow and UI checks cannot be silently skipped; use
+`--health-only --skip-ui` only for an explicit limited infrastructure check.
+
+Streamlit can target a separate local or staging API service with:
+
+```bash
+SUPPLIER_API_BASE_URL=https://supplier-intelligence-api.onrender.com
+```
+
+If the configured API is unreachable, the command center shows a clear operator
+message instead of assuming localhost.
+
+Connector and narrative modes:
+
+- `SUPPLIER_CONNECTOR_MODE=demo` or `stub`: deterministic offline signals.
+- `SUPPLIER_CONNECTOR_MODE=public`: optional RSS news/hiring sources and SEC EDGAR submissions; failures are recorded as degraded sync status and do not break scoring.
+- Public news entries must mention the configured supplier name or ID by default (`SUPPLIER_NEWS_REQUIRE_SUPPLIER_MATCH=true`) so general feeds are not attributed blindly.
+- SEC mapping is conservative: material 8-K/6-K and late-filing notices become weak signals, while routine periodic/ownership forms are skipped rather than accumulated as risk.
+- Public requests use `SUPPLIER_CONNECTOR_TIMEOUT_SECONDS` and `SUPPLIER_CONNECTOR_RETRY_COUNT`. Set `SUPPLIER_FILINGS_USER_AGENT` to an application name and monitored contact before using SEC EDGAR.
+- `SUPPLIER_LLM_NARRATIVE_PROVIDER=none`: deterministic governed narrative, the default.
+- `SUPPLIER_LLM_NARRATIVE_PROVIDER=openai|anthropic`: provider interface and governance boundary are present, but `/ready` reports `interface_only`; real provider calls remain intentionally disabled, tests use a mock, and runtime falls back deterministically.
 
 ## Real-Time Sentinel Setup
 
@@ -210,6 +281,7 @@ Render/Postgres staging:
 ```bash
 python scripts/migrate.py
 python scripts/validate_tenant_schema.py
+python scripts/seed_demo_data.py --tenant-id demo-tenant
 python scripts/smoke_staging.py --base-url https://supplier-intelligence-api.onrender.com
 ```
 
@@ -230,6 +302,8 @@ Readiness docs:
 - `MIGRATIONS.md`
 - `WORKER_ARCHITECTURE.md`
 - `AUTH_INTEGRATION.md`
+- `docs/AUTH_STAGING_PLAN.md`
+- `docs/AUTOMATIONS_PLAN.md`
 - `SECRETS_AND_KMS.md`
 - `BACKUP_RESTORE_RUNBOOK.md`
 - `LOAD_TESTING.md`

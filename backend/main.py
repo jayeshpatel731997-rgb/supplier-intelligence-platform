@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import math
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.config import Settings, get_settings
@@ -29,6 +31,7 @@ from src.services.ingestion_service import IngestionService
 from src.services.risk_service import RiskService
 from src.services.scheduler import LocalJobScheduler
 from src.services.sentinel_service import SentinelService
+from src.services.supplier_evidence_service import SupplierEvidenceService
 from src.services.system_service import system_status
 from src.services.upload_storage import (
     UploadSafetyError,
@@ -48,6 +51,7 @@ class ApiRuntime:
         self.settings: Settings = get_settings()
         self.session_factory: sessionmaker[Session] | None = None
         self.startup_error = ""
+        self.config_issues: list[str] = []
         self.initialized = False
 
 
@@ -58,6 +62,12 @@ def initialize_runtime(*, retry_failed: bool = False) -> None:
     if runtime.initialized and (runtime.session_factory is not None or not retry_failed):
         return
     runtime.settings = get_settings()
+    runtime.config_issues = runtime.settings.validate_runtime()
+    if runtime.config_issues:
+        logger.warning(
+            "api_startup_configuration_degraded",
+            extra={"issue_count": len(runtime.config_issues), "issues": runtime.config_issues},
+        )
     try:
         runtime.session_factory = create_session_factory(runtime.settings)
         if not runtime.settings.is_production:
@@ -97,6 +107,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(_request: Request, exc: RequestValidationError):
+    details = [
+        {
+            "type": error.get("type", "value_error"),
+            "loc": error.get("loc", ()),
+            "msg": error.get("msg", "Request validation failed."),
+        }
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": details})
 app.add_middleware(
     RateLimitMiddleware,
     enabled=settings_for_middleware.rate_limit_enabled,
@@ -132,6 +155,50 @@ class ApiKeyCreateRequest(BaseModel):
 class AccessReviewCreateRequest(BaseModel):
     reviewer: str
     notes: str = ""
+
+
+class EvidenceSignalPayload(BaseModel):
+    supplier_id: str
+    supplier_name: str
+    signal_id: str = ""
+    signal_type: str = "operational"
+    driver: str = "Unclassified signal"
+    source: str = ""
+    source_url: str = ""
+    observed_at: str = ""
+    severity: float = Field(default=0.0, ge=0.0, le=100.0, allow_inf_nan=False)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0, allow_inf_nan=False)
+    summary: str = ""
+
+
+class EvidenceSignalImportRequest(BaseModel):
+    source_system: str
+    connector_type: str = "api"
+    signals: list[EvidenceSignalPayload]
+
+
+class EvidenceRunRequest(BaseModel):
+    scoring_version: str = ""
+    include_demo_signals: bool = False
+
+
+class EvidenceActionUpdateRequest(BaseModel):
+    status: str
+    owner: str = ""
+
+
+class EvidenceScoringConfigRequest(BaseModel):
+    version: str
+    description: str = ""
+    signal_type_weights: dict[str, float] = Field(default_factory=dict)
+    supplier_criticality: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("signal_type_weights", "supplier_criticality")
+    @classmethod
+    def validate_finite_bounded_values(cls, values: dict[str, float]) -> dict[str, float]:
+        if any(not math.isfinite(value) or value < 0 or value > 5 for value in values.values()):
+            raise ValueError("Scoring values must be finite and between 0 and 5.")
+        return values
 
 
 @app.middleware("http")
@@ -184,7 +251,13 @@ def _status_response(status: dict[str, Any], *, ready_check: bool = False) -> di
     payload = {
         "status": "ready" if is_ready else "degraded",
         "database": status["database"],
+        "backend": status["backend"],
         "api": status["api"],
+        "auth": status["auth"],
+        "connectors": status["connectors"],
+        "scoring_config": status["scoring_config"],
+        "convex": status["convex"],
+        "llm_narrative": status["llm_narrative"],
         "production_issues": status["production_issues"],
         "status_error": status["status_error"],
     }
@@ -297,7 +370,12 @@ def health(active_settings: Settings = Depends(get_active_settings)):
     initialize_runtime(retry_failed=True)
     active_settings = runtime.settings
     status = system_status(active_settings, runtime.session_factory, DEMO_TENANT_ID, runtime.startup_error)
-    return {"status": "ok" if status["database"]["ok"] and status["api"]["ok"] else "degraded", "database": status["database"], "api": status["api"]}
+    return {
+        "status": "ok" if status["database"]["ok"] and status["api"]["ok"] else "degraded",
+        "database": status["database"],
+        "backend": status["backend"],
+        "api": status["api"],
+    }
 
 
 @app.get("/worker/health", tags=["health"])
@@ -358,6 +436,154 @@ def risk_recalculate(session: Session = Depends(get_db), context: TenantContext 
 @app.get("/financial/exposure", tags=["risk"])
 def financial_exposure(session: Session = Depends(get_db), context: TenantContext = Depends(require_context("risk.read"))):
     result = RiskService(session, context.tenant_id).financial_exposure()
+    session.commit()
+    return result
+
+
+@app.get("/evidence/signals", tags=["evidence"])
+def evidence_signals(
+    session: Session = Depends(get_db),
+    context: TenantContext = Depends(require_context("evidence.read")),
+):
+    return SupplierEvidenceService(session, context.tenant_id).list_signals()
+
+
+@app.get("/evidence/connectors", tags=["evidence"])
+def evidence_connectors(
+    active_settings: Settings = Depends(get_active_settings),
+    context: TenantContext = Depends(require_context("evidence.read")),
+):
+    del context
+    return SupplierEvidenceService.connector_catalog(active_settings)
+
+
+@app.get("/evidence/connectors/syncs", tags=["evidence"])
+def evidence_connector_syncs(
+    session: Session = Depends(get_db),
+    context: TenantContext = Depends(require_context("evidence.read")),
+):
+    return SupplierEvidenceService(session, context.tenant_id).list_connector_syncs()
+
+
+@app.post("/evidence/connectors/{connector_name}/sync", tags=["evidence"])
+def run_evidence_connector_sync(
+    connector_name: str,
+    session: Session = Depends(get_db),
+    active_settings: Settings = Depends(get_active_settings),
+    context: TenantContext = Depends(require_context("evidence.run")),
+):
+    result = SupplierEvidenceService(session, context.tenant_id).run_connector_sync(
+        connector_name=connector_name,
+        settings=active_settings,
+        actor=context.username,
+    )
+    session.commit()
+    return result
+
+
+@app.post("/evidence/signals/import", tags=["evidence"])
+def import_evidence_signals(
+    payload: EvidenceSignalImportRequest,
+    session: Session = Depends(get_db),
+    context: TenantContext = Depends(require_context("evidence.write")),
+):
+    result = SupplierEvidenceService(session, context.tenant_id).import_signals(
+        source_system=payload.source_system,
+        connector_type=payload.connector_type,
+        signals=[item.model_dump() if hasattr(item, "model_dump") else item.dict() for item in payload.signals],
+        actor=context.username,
+    )
+    session.commit()
+    return result
+
+
+@app.get("/evidence/scoring-config/current", tags=["evidence"])
+def current_evidence_scoring_config(
+    session: Session = Depends(get_db),
+    context: TenantContext = Depends(require_context("evidence.read")),
+):
+    return SupplierEvidenceService(session, context.tenant_id).current_scoring_config()
+
+
+@app.put("/evidence/scoring-config", tags=["evidence"])
+def save_evidence_scoring_config(
+    payload: EvidenceScoringConfigRequest,
+    session: Session = Depends(get_db),
+    context: TenantContext = Depends(require_context("evidence.write")),
+):
+    result = SupplierEvidenceService(session, context.tenant_id).save_scoring_config(
+        version=payload.version,
+        description=payload.description,
+        signal_type_weights=payload.signal_type_weights,
+        supplier_criticality=payload.supplier_criticality,
+        actor=context.username,
+    )
+    session.commit()
+    return result
+
+
+@app.get("/evidence/runs", tags=["evidence"])
+def evidence_runs(
+    session: Session = Depends(get_db),
+    context: TenantContext = Depends(require_context("evidence.read")),
+):
+    return SupplierEvidenceService(session, context.tenant_id).list_runs()
+
+
+@app.post("/evidence/runs", tags=["evidence"])
+def run_evidence_chain(
+    payload: EvidenceRunRequest,
+    session: Session = Depends(get_db),
+    active_settings: Settings = Depends(get_active_settings),
+    context: TenantContext = Depends(require_context("evidence.run")),
+):
+    if payload.include_demo_signals and (
+        not active_settings.demo_mode
+        or active_settings.is_staging_or_production
+        or context.tenant_id != DEMO_TENANT_ID
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Demo signals may only be injected for demo-tenant in local demo mode.",
+        )
+    result = SupplierEvidenceService(session, context.tenant_id).run_evidence_chain(
+        scoring_version=payload.scoring_version,
+        include_demo_signals=payload.include_demo_signals,
+        actor=context.username,
+        settings=active_settings,
+    )
+    session.commit()
+    return result
+
+
+@app.get("/evidence/runs/{run_id}", tags=["evidence"])
+def evidence_run(
+    run_id: str,
+    session: Session = Depends(get_db),
+    context: TenantContext = Depends(require_context("evidence.read")),
+):
+    result = SupplierEvidenceService(session, context.tenant_id).get_run(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Evidence run not found")
+    return result
+
+
+@app.patch("/evidence/actions/{action_id}", tags=["evidence"])
+def update_evidence_action(
+    action_id: int,
+    payload: EvidenceActionUpdateRequest,
+    session: Session = Depends(get_db),
+    context: TenantContext = Depends(require_context("evidence.write")),
+):
+    try:
+        result = SupplierEvidenceService(session, context.tenant_id).update_action(
+            action_id=action_id,
+            status=payload.status,
+            owner=payload.owner,
+            actor=context.username,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     session.commit()
     return result
 

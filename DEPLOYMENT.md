@@ -71,17 +71,22 @@ services.
 - `supplier-intelligence-ui`: Streamlit using the root `Dockerfile`
 - Render Postgres
 
-The API service start command is:
+The API service Docker command is:
 
 ```bash
-python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}
+sh scripts/start_api_render.sh
 ```
 
-The UI service start command is:
+The UI service Docker command is:
 
 ```bash
-streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0
+sh scripts/start_ui_render.sh
 ```
+
+The launchers use `${PORT:-10000}` internally. The API launcher runs Alembic
+migrations before replacing itself with Uvicorn; the UI launcher replaces
+itself with Streamlit. Keeping sequencing inside scripts avoids Render treating
+a quoted multi-command `dockerCommand` as one executable name.
 
 The API Blueprint uses `/live` for Render's process health check; use `/ready`
 and `scripts/smoke_staging.py` against the API service URL to verify that
@@ -137,13 +142,21 @@ SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY=<secret-access-key>
 After Render deploys, run the smoke test locally:
 
 ```bash
-set STAGING_BASE_URL=https://supplier-intelligence-api.onrender.com
+set STAGING_API_BASE_URL=https://supplier-intelligence-api.onrender.com
+set STAGING_UI_BASE_URL=https://supplier-intelligence-ui.onrender.com
+set STAGING_BEARER_TOKEN=<short-lived-oidc-token>
+set STAGING_EXPECTED_TENANT_ID=demo-tenant
 python scripts/smoke_staging.py
 ```
 
-`STAGING_BASE_URL` must be the `supplier-intelligence-api` URL. If it points to
+`STAGING_API_BASE_URL` must be the `supplier-intelligence-api` URL.
+`STAGING_BASE_URL` remains a compatible alias. If either points to
 `supplier-intelligence-ui`, Streamlit can serve `200 text/html` for API-like
 paths; the smoke test treats that as a failed deployment target.
+The default smoke requires staging credentials, the expected tenant, and the
+Streamlit URL. Use `python scripts/smoke_staging.py --health-only --skip-ui`
+only when intentionally checking public API health and auth rejection without
+the authenticated evidence workflow or Streamlit surface.
 
 For an authenticated read check, add either:
 
@@ -158,18 +171,80 @@ set STAGING_TENANT_ID=<tenant-id>
 set STAGING_API_KEY=<tenant-api-key>
 ```
 
+Seed deterministic demo data before workflow smoke checks:
+
+```bash
+python scripts/migrate.py
+set SUPPLIER_STAGING_SEED_USERNAME=<oidc-subject-or-verified-email>
+python scripts/seed_demo_data.py --tenant-id demo-tenant
+```
+
+The seed command does not create staging schema; Alembic migrations must succeed
+first. In OIDC mode the staging seed creates a `risk_manager` membership for the
+configured token subject or verified email and does not create an API key.
+
 The smoke test checks `/live`, `/health`, `/ready`, verifies `/suppliers`
 rejects missing auth, verifies health endpoints return API JSON instead of
-Streamlit HTML fallback, and optionally checks authenticated `/suppliers`. It
-redacts secret-like values in output.
+Streamlit HTML fallback, and, when auth is configured, checks authenticated
+`/suppliers`, connector sync, evidence-chain run, evidence action update, and
+scoring config read. In public connector mode, a `skipped` sync is accepted
+when an optional source or supplier identifier is not configured. A `failed`
+sync fails the smoke test so staging cannot silently ignore connector outages.
+The client redacts secret-like values in output.
+
+For separately deployed Streamlit, set:
+
+```bash
+SUPPLIER_API_BASE_URL=https://supplier-intelligence-api.onrender.com
+```
+
+The Streamlit command center uses this value for API reachability checks and
+shows a friendly error if the API is unreachable.
+
+Connector modes for staging:
+
+```bash
+SUPPLIER_CONNECTOR_MODE=demo
+# or, for optional public data tests:
+SUPPLIER_CONNECTOR_MODE=public
+SUPPLIER_CONNECTOR_TIMEOUT_SECONDS=10
+SUPPLIER_CONNECTOR_RETRY_COUNT=1
+SUPPLIER_NEWS_RSS_URLS=https://example.com/feed.xml
+SUPPLIER_NEWS_REQUIRE_SUPPLIER_MATCH=true
+SUPPLIER_FILINGS_COMPANY_IDENTIFIER=<cik>
+SUPPLIER_FILINGS_USER_AGENT=Supplier Intelligence Platform ops@example.com
+# Optional override; when blank, the connector uses SEC submissions for the CIK.
+SUPPLIER_FILINGS_SOURCE_URLS=
+SUPPLIER_HIRING_SOURCE_URLS=https://example.com/jobs.rss
+```
+
+If public connector configuration is missing or a source fails, the connector
+sync records `skipped` or `failed` and the evidence-chain workflow remains
+available. Demo/stub mode remains deterministic and offline. Public news and
+hiring inputs must be RSS/Atom-compatible; SEC filings are read from the public
+EDGAR submissions JSON endpoint and mapped to financial weak signals.
+Routine forms such as 10-K, 10-Q, and Form 4 are not treated as adverse risk
+signals; the connector currently maps material 8-K/6-K and late-filing notices.
 
 ## Postgres Configuration
 
-Set:
+Set one managed Postgres connection URL:
 
 ```bash
 SUPPLIER_DATABASE_URL=postgresql+psycopg://supplier_app:<password>@<host>:5432/supplier_intelligence
 ```
+
+Provider notes:
+
+- **Render Postgres:** inject the database `connectionString` into
+  `SUPPLIER_DATABASE_URL`, as shown in `render.yaml`. A `postgresql://` URL is
+  normalized to the Psycopg SQLAlchemy driver.
+- **Neon:** copy the pooled connection string into the hosting provider's
+  secret store. Keep `sslmode=require`; do not put the URL in Git, shell
+  history, screenshots, or logs.
+- **Supabase:** use the direct Postgres connection or the transaction/session
+  pooler URL appropriate for the service's connection lifetime. Require TLS and
+  keep the password only in the deployment secret store.
 
 Production mode does not create or mutate schema at API/worker startup. Run
 Alembic before starting production services:
@@ -179,6 +254,31 @@ python scripts/migrate.py
 python scripts/validate_tenant_schema.py
 ```
 
+Run these commands only after verifying that the URL targets the intended
+disposable or staging database:
+
+```powershell
+$env:SUPPLIER_SECURITY_MODE="production"
+$env:SUPPLIER_DEPLOYMENT_MODE="staging"
+$env:SUPPLIER_DEMO_MODE="false"
+$env:SUPPLIER_DATABASE_URL="<secret from Render, Neon, or Supabase>"
+.\venv\Scripts\python.exe scripts\migrate.py
+.\venv\Scripts\python.exe scripts\validate_tenant_schema.py
+```
+
+For an approved seeded OIDC staging tenant, set the subject or verified email
+that will be present in the bearer token and run the seed twice to prove
+idempotency:
+
+```powershell
+$env:AUTH_PROVIDER="oidc"
+$env:SUPPLIER_STAGING_SEED_USERNAME="<oidc-subject-or-verified-email>"
+.\venv\Scripts\python.exe scripts\seed_demo_data.py --tenant-id demo-tenant
+.\venv\Scripts\python.exe scripts\seed_demo_data.py --tenant-id demo-tenant
+```
+
+Do not run these mutating commands against production.
+
 Local/demo mode still supports the SQLAlchemy `create_all()` fallback for SQLite
 developer demos.
 
@@ -186,6 +286,20 @@ developer demos.
 `SUPPLIER_DATABASE_URL`/`DATABASE_URL`, when the URL is invalid, when SQLite is
 used for staging/production, or when `--create-all-fallback` is attempted in
 staging/production.
+
+### Manual Managed Postgres Checklist
+
+1. Create an empty staging database or isolated staging project.
+2. Restrict network access and create a least-privilege application role.
+3. Store `SUPPLIER_DATABASE_URL` in the provider or deployment secret manager.
+4. Confirm the hostname and database name out of band before migration.
+5. Take or verify a provider snapshot, branch, or backup.
+6. Run migration and tenant-schema validation.
+7. Run the seed twice only when a seeded demo tenant is approved.
+8. Deploy API and Streamlit with `SUPPLIER_API_BASE_URL` pointing to the API.
+9. Set `STAGING_API_BASE_URL`, `STAGING_UI_BASE_URL`, a short-lived bearer
+   token, and `STAGING_EXPECTED_TENANT_ID`; then run the authenticated smoke.
+10. Record revision, sanitized output, backup identifier, and rollback owner.
 
 ## NewsAPI / Anthropic / OpenAI
 
@@ -201,6 +315,18 @@ ANTHROPIC_API_KEY=...
 ```
 
 If keys are missing or an API fails, Sentinel returns a safe error, records an alert, and does not crash the app.
+
+Supplier evidence narratives remain deterministic by default:
+
+```bash
+SUPPLIER_LLM_NARRATIVE_PROVIDER=none
+```
+
+`openai` and `anthropic` are future governed modes. Before enabling either,
+require evidence-only structured inputs, output schema validation,
+claim-to-evidence traceability, tenant-safe logging, evaluation cases,
+deterministic fallback, and provider retention review. Current readiness reports
+those modes as `interface_only`; do not treat them as live integrations.
 
 ## Upload Safety And Storage
 
@@ -269,6 +395,10 @@ an active local membership for the token subject/email in the claimed tenant.
 Create or sync tenants and memberships before switching production traffic to
 `AUTH_PROVIDER=oidc`.
 
+This OIDC path currently protects FastAPI. Streamlit still uses the pilot/local
+login and does not implement a browser OIDC callback, so UI SSO remains a
+real-world staging gap.
+
 ## Alembic
 
 An Alembic initial metadata migration is included. Local/demo mode still supports automatic table creation for SQLite compatibility.
@@ -289,6 +419,26 @@ Celery-ready worker:
 ```bash
 docker compose --profile celery up --build celery-worker
 ```
+
+Redis/Celery is optional for the first staging gate. Keep `WORKER_MODE=local`
+and scheduling disabled for the API + Streamlit + Postgres phase. Promote to
+`WORKER_MODE=celery` with `REDIS_URL` only after Redis connectivity, worker
+health, retry behavior, tenant-scoped jobs, and cron ownership are tested.
+
+## Staging Observability Plan
+
+Sentry and PostHog are optional integrations, not current staging blockers.
+
+- Sentry: capture unhandled API/worker exceptions with environment and release
+  tags; redact headers, tokens, database URLs, supplier payloads, and
+  tenant-sensitive data before transport.
+- PostHog: capture coarse product events only after consent and data-governance
+  review; do not send supplier names, evidence text, credentials, or raw audit
+  details.
+- Keep application logs and `/ready` useful without either service. Missing
+  observability credentials must never crash startup.
+- Before rollout, define secret-manager variables, sampling rules, retention
+  owners, deletion procedures, and a redaction test.
 
 ## Rollback Notes
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Demo Packaging and Docs"
+  short_description: "Prepare an honest customer demo package"
+  default_prompt: "Use $demo-packaging-and-docs to prepare the customer demo flow, export checklist, and real-versus-stubbed documentation."

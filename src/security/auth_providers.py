@@ -51,7 +51,7 @@ class AuthProvider:
         subject = str(claims.get("sub") or claims.get("subject") or "")
         username = str(claims.get("email") or claims.get("preferred_username") or subject)
         role = _role_from_claims(claims)
-        tenant_id = str(claims.get("tenant_id") or claims.get("org_id") or DEMO_TENANT_ID)
+        tenant_id = str(claims.get("tenant_id") or claims.get("org_id") or "")
         groups = claims.get("groups") or claims.get("roles") or []
         if isinstance(groups, str):
             groups = [groups]

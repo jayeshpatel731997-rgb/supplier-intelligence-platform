@@ -18,8 +18,8 @@ worker, `supplier-intelligence-ui`, and cron jobs.
 
 `render.yaml` and `render.full.yaml` create separate web services:
 
-- `supplier-intelligence-api`: `python scripts/migrate.py && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}`
-- `supplier-intelligence-ui`: `streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0`
+- `supplier-intelligence-api`: `sh scripts/start_api_render.sh`
+- `supplier-intelligence-ui`: `sh scripts/start_ui_render.sh`
 
 They set these non-secret values:
 
@@ -35,8 +35,11 @@ They set these non-secret values:
 - `SUPPLIER_MAX_UPLOAD_BYTES=5000000`
 - `SUPPLIER_ALLOWED_UPLOAD_EXTENSIONS=.csv,.xlsx,.xls,.json`
 - `SUPPLIER_ALLOWED_UPLOAD_MIME_TYPES=text/csv,application/csv,text/plain,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
-- `SUPPLIER_UPLOAD_STORAGE_PROVIDER=s3`
+- `SUPPLIER_UPLOAD_STORAGE_PROVIDER=supabase`
 - `SUPPLIER_UPLOAD_STORAGE_KEY_PREFIX=uploads`
+- `SUPABASE_EVIDENCE_BUCKET=supplier-evidence-staging`
+- `SUPABASE_UPLOAD_QUARANTINE_BUCKET=supplier-uploads-quarantine-staging`
+- `SUPABASE_UPLOAD_CLEAN_BUCKET=supplier-uploads-clean-staging`
 - `SUPPLIER_UPLOAD_SCANNER_REQUIRED=false`
 - `SUPPLIER_UPLOAD_SCANNER_PROVIDER=none`
 - `RETENTION_ENABLED=false`
@@ -49,11 +52,16 @@ Render also generates:
 
 - `SUPPLIER_APP_ADMIN_PASSWORD`
 
+Render does not generate `SUPPLIER_DEMO_API_KEY`. The default real staging path
+for protected FastAPI routes is OIDC bearer authentication, not the local/demo
+API key. Streamlit still uses the pilot login; browser OIDC callback handling is
+not implemented.
+
 ## Required Manual Values Before `/ready` Passes
 
 Set these for real staging:
 
-- `CORS_ALLOW_ORIGINS=https://<your-streamlit-or-ui-origin>`
+- `CORS_ALLOW_ORIGINS=https://supplier-intelligence-ui-hut2.onrender.com`
 - `OIDC_ISSUER_URL`
 - `OIDC_CLIENT_ID`
 - `OIDC_CLIENT_SECRET`
@@ -61,11 +69,19 @@ Set these for real staging:
 - `OIDC_JWKS_URL`
 - `OIDC_ALGORITHMS=RS256` or the exact algorithms your IdP uses
 - `OIDC_CLOCK_SKEW_SECONDS=60`
-- `SUPPLIER_UPLOAD_STORAGE_BUCKET`
-- `SUPPLIER_UPLOAD_STORAGE_REGION`
-- `SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL`
-- `SUPPLIER_UPLOAD_STORAGE_ACCESS_KEY_ID`
-- `SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY`
+- `SUPPLIER_API_BASE_URL=https://<your-api-origin>`
+- `SUPPLIER_STAGING_SEED_USERNAME=<oidc-subject-or-verified-email>` when the deterministic seed is approved
+- For S3-compatible storage:
+  - `SUPPLIER_UPLOAD_STORAGE_BUCKET`
+  - `SUPPLIER_UPLOAD_STORAGE_REGION`
+  - `SUPPLIER_UPLOAD_STORAGE_ENDPOINT_URL`
+  - `SUPPLIER_UPLOAD_STORAGE_ACCESS_KEY_ID`
+  - `SUPPLIER_UPLOAD_STORAGE_SECRET_ACCESS_KEY`
+- For Supabase Storage:
+  - `SUPPLIER_UPLOAD_STORAGE_PROVIDER=supabase`
+  - `SUPABASE_EVIDENCE_BUCKET`
+  - `SUPABASE_UPLOAD_QUARANTINE_BUCKET`
+  - `SUPABASE_UPLOAD_CLEAN_BUCKET`
 
 If policy requires upload scanning:
 
@@ -78,6 +94,9 @@ Optional live intelligence values:
 - `NEWSAPI_KEY`
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
+
+`OIDC_REDIRECT_URI` is a future integration placeholder, not a current
+readiness requirement.
 
 ## Local-Auth Staging Exception
 
@@ -94,21 +113,32 @@ for a short staging window, set all of the following explicitly:
 Run after the Render deploy:
 
 ```powershell
-$env:STAGING_BASE_URL="https://supplier-intelligence-api.onrender.com"
+$env:STAGING_API_URL="https://supplier-intelligence-api.onrender.com"
+$env:STAGING_API_TOKEN="<short-lived-oidc-token>"
+$env:STAGING_UI_BASE_URL="https://supplier-intelligence-ui.onrender.com"
+$env:STAGING_EXPECTED_TENANT_ID="demo-tenant"
 python scripts/smoke_staging.py
+python scripts/validate_managed_staging.py
 ```
 
 Use the `supplier-intelligence-api` URL. The smoke script fails clearly if the
 base URL points at Streamlit and returns HTML fallback instead of FastAPI JSON or
 an API auth rejection.
 
-For an authenticated read check, add either:
+`scripts/smoke_staging.py` and `scripts/validate_managed_staging.py` both accept
+`STAGING_API_URL` and `STAGING_API_TOKEN`. `STAGING_API_BASE_URL` and
+`STAGING_BEARER_TOKEN` remain compatible aliases.
 
-```powershell
-$env:STAGING_BEARER_TOKEN="<oidc-token>"
-```
+`scripts/validate_managed_staging.py` is the broader evidence collector for
+managed staging. It accepts `STAGING_API_URL`, `STAGING_API_TOKEN`,
+`POSTGRES_URL`/`DATABASE_URL`, optional object-storage settings, optional Render
+service IDs, and scanner settings. It redacts tokens, database passwords, object
+storage keys, and Render credentials from output. Database checks are read-only
+and require `STAGING_DB_READONLY_APPROVED=true`; backup/restore evidence remains
+manual unless an explicitly disposable restore target is approved.
 
-or, only for the local-auth exception:
+Only for the approved local-auth exception, replace the bearer-token variables
+with:
 
 ```powershell
 $env:STAGING_TENANT_ID="<tenant-id>"
@@ -118,8 +148,8 @@ $env:STAGING_API_KEY="<tenant-api-key>"
 ## Manual Blockers
 
 - Real OIDC/SAML provider configuration and tenant membership sync are manual.
-- Real S3-compatible object storage bucket, credentials, and lifecycle policy
-  are manual.
+- Real S3-compatible or Supabase Storage buckets, credentials, and lifecycle
+  policy are manual.
 - Real scanner integration is manual; the code currently has a scanner
   interface/stub and fail-closed readiness checks.
 - Render Postgres backup/restore validation is manual.

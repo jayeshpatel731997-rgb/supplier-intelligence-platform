@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Goal Writer"
+  short_description: "Draft executable Codex goals under 4,000 chars"
+  default_prompt: "Use $codex-goal-writer to turn the current project status into a concise, verifiable Codex goal."

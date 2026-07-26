@@ -1,0 +1,21 @@
+test_propagator_uses_weibull_sir_and_lhs_financials (tests.test_agent_models.WeibullSirTests.test_propagator_uses_weibull_sir_and_lhs_financials) ... ok
+test_static_beta_remains_default (tests.test_agent_models.WeibullSirTests.test_static_beta_remains_default) ... ok
+test_weibull_beta_changes_with_supplier_profile (tests.test_agent_models.WeibullSirTests.test_weibull_beta_changes_with_supplier_profile) ... ok
+test_mapper_matches_region_and_tariff_exposure (tests.test_agents_and_models_core.MapperAgentTests.test_mapper_matches_region_and_tariff_exposure) ... ok
+test_bayesian_risk_orders_high_risk_above_low_risk (tests.test_agents_and_models_core.ModelCoreTests.test_bayesian_risk_orders_high_risk_above_low_risk) ... ok
+test_graph_metrics_return_resilience_and_rankings (tests.test_agents_and_models_core.ModelCoreTests.test_graph_metrics_return_resilience_and_rankings) ... ok
+test_strategist_adds_fault_tree_summary_when_network_data_available (tests.test_agents_and_models_core.StrategistAgentTests.test_strategist_adds_fault_tree_summary_when_network_data_available) ... ok
+test_dataframe_to_network_data_builds_edges_and_scenarios (tests.test_data_ingestion.DataIngestionTests.test_dataframe_to_network_data_builds_edges_and_scenarios) ... ok
+test_ingest_file_maps_aliases_and_applies_defaults (tests.test_data_ingestion.DataIngestionTests.test_ingest_file_maps_aliases_and_applies_defaults) ... ok
+test_live_llm_prompt_contains_only_public_article_text (tests.test_news_intelligence.NewsIntelligenceTests.test_live_llm_prompt_contains_only_public_article_text) ... ok
+test_live_news_ai_scan_matches_suppliers_locally (tests.test_news_intelligence.NewsIntelligenceTests.test_live_news_ai_scan_matches_suppliers_locally) ... ok
+test_supplier_news_impact_normalizes_severity_to_lowercase (tests.test_news_intelligence.NewsIntelligenceTests.test_supplier_news_impact_normalizes_severity_to_lowercase) ... ok
+test_password_hash_verification (tests.test_pilot_security.PilotSecurityTests.test_password_hash_verification) ... ok
+test_password_strength_and_failed_login_lockout (tests.test_pilot_security.PilotSecurityTests.test_password_strength_and_failed_login_lockout) ... ok
+test_production_mode_requires_first_admin_setup (tests.test_pilot_security.PilotSecurityTests.test_production_mode_requires_first_admin_setup) ... ok
+test_user_creation_authentication_and_upload_audit (tests.test_pilot_security.PilotSecurityTests.test_user_creation_authentication_and_upload_audit) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 4.755s
+
+OK

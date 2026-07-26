@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tenant Isolation Security Review"
+  short_description: "Audit tenant boundaries and authorization paths"
+  default_prompt: "Use $tenant-isolation-security-review to audit tenant headers, scoped queries, auth bypasses, and audit logging."

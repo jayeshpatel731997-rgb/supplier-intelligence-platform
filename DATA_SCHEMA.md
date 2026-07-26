@@ -54,6 +54,13 @@ The SQLAlchemy production schema includes:
 - `supplier_risk_scores`
 - `news_events`
 - `supplier_event_matches`
+- `supplier_weak_signals`
+- `supplier_evidence_scoring_versions`
+- `supplier_evidence_runs`
+- `supplier_evidence_run_suppliers`
+- `supplier_evidence_actions`
+- `supplier_connector_syncs`
+- `supplier_historical_outcomes`
 - `scenario_runs`
 - `financial_exposure_runs`
 - `alerts`
@@ -63,6 +70,67 @@ The SQLAlchemy production schema includes:
 - `background_job_runs`
 
 All business tables include `tenant_id` and are intended to be queried through tenant-scoped repositories.
+
+## Supplier Evidence Chain Fields
+
+Weak signals include:
+
+- `signal_id`
+- `supplier_id`
+- `supplier_name`
+- `signal_type`: `news`, `financial`, `operational`, `audit`, `email`, `hiring`, `erp`, or connector-defined type
+- `driver`
+- `source`
+- `source_url`
+- `source_system`
+- `observed_at`
+- `severity`
+- `confidence`
+- `summary`
+- `raw_payload_json`
+
+Evidence-chain runs include:
+
+- `run_id`
+- `scoring_version`
+- `status`
+- `supplier_count`
+- `narrative_json`
+- `result_json`
+- `llm_provider`
+- `llm_model`
+- `prompt_policy`
+
+Evidence actions include:
+
+- `run_id`
+- `supplier_id`
+- `action`
+- `source_driver`
+- `status`: `open`, `in_progress`, `blocked`, `completed`, `dismissed`
+- `owner`
+- `updated_by`
+
+Connector syncs include:
+
+- `source_system`
+- `connector_type`
+- `status`: `completed`, `failed`, or `skipped`
+- `records_received`
+- `records_accepted`
+- `started_at`
+- `finished_at`
+- `error`
+- `metadata_json`
+
+Historical outcomes include:
+
+- `supplier_id`
+- `event_type`
+- `event_date`
+- `severity`
+- `notes`
+- `source`
 
 ## Alert Fields
 

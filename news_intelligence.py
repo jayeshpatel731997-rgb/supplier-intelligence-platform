@@ -24,7 +24,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional
 import pandas as pd
@@ -198,7 +198,7 @@ def run_ai_intelligence_briefing(
 
         portfolio_text = "\n".join(portfolio_lines) if portfolio_lines else "No supplier data provided."
         focus = f"Focus on: {custom_query}." if custom_query else ""
-        today = datetime.utcnow().strftime("%B %Y")
+        today = datetime.now(UTC).strftime("%B %Y")
 
         prompt = f"""You are a senior supply chain risk intelligence analyst. Today is {today}.
 
@@ -252,7 +252,7 @@ Return ONLY the JSON array, no markdown, no preamble."""
         # Convert to SupplierNewsImpact objects
         total_spend = float(supplier_df["annual_spend"].sum()) if (supplier_df is not None and "annual_spend" in supplier_df.columns) else 0
         impacts = []
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         for ev in events:
             pub_dt = now - timedelta(days=int(ev.get("published_days_ago", 1)))
@@ -308,7 +308,7 @@ def get_demo_impacts(supplier_df: pd.DataFrame) -> list[SupplierNewsImpact]:
     Used when no API key is available — always shows something useful.
     Tailored to the supplier portfolio when possible.
     """
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
 
     # Extract portfolio context
     countries = []
@@ -561,7 +561,7 @@ def fetch_news_local(api_key: str, query: str = None, days_back: int = 7,
         import requests
 
         base_url = "https://newsapi.org/v2/everything"
-        from_date = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        from_date = (datetime.now(UTC) - timedelta(days=days_back)).strftime("%Y-%m-%d")
         search_query = query or "supply chain disruption OR tariff OR factory shutdown"
 
         params = {
@@ -592,7 +592,7 @@ def fetch_news_local(api_key: str, query: str = None, days_back: int = 7,
             try:
                 pub_dt = datetime.fromisoformat(pub_at.replace("Z", "+00:00"))
             except Exception:
-                pub_dt = datetime.utcnow()
+                pub_dt = datetime.now(UTC)
 
             articles.append(NewsArticle(
                 article_id=art_id,

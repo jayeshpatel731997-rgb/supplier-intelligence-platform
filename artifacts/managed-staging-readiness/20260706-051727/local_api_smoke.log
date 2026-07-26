@@ -1,0 +1,27 @@
+2026-07-06 00:19:34,491 INFO httpx HTTP Request: GET http://testserver/live "HTTP/1.1 200 OK"
+2026-07-06 00:19:34,526 INFO httpx HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+2026-07-06 00:19:34,542 INFO httpx HTTP Request: GET http://testserver/ready "HTTP/1.1 200 OK"
+2026-07-06 00:19:34,876 INFO httpx HTTP Request: GET http://testserver/system/status "HTTP/1.1 200 OK"
+2026-07-06 00:19:35,195 INFO httpx HTTP Request: GET http://testserver/suppliers "HTTP/1.1 200 OK"
+{
+  "/live": {
+    "status_code": 200,
+    "request_id_present": true
+  },
+  "/health": {
+    "status_code": 200,
+    "request_id_present": true
+  },
+  "/ready": {
+    "status_code": 200,
+    "request_id_present": true
+  },
+  "/system/status": {
+    "status_code": 200,
+    "request_id_present": true
+  },
+  "/suppliers": {
+    "status_code": 200,
+    "request_id_present": true
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoReview Closeout"
+  short_description: "Close out changes with a structured risk review"
+  default_prompt: "Use $autoreview-closeout to review this change set for security, tenant isolation, tests, deployment blockers, and docs."

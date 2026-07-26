@@ -1,0 +1,18 @@
+{
+  "docker": "NOT_FOUND",
+  "pg_dump": "C:\\Program Files\\PostgreSQL\\18\\bin\\pg_dump.EXE",
+  "pg_restore": "C:\\Program Files\\PostgreSQL\\18\\bin\\pg_restore.EXE",
+  "psql": "C:\\Program Files\\PostgreSQL\\18\\bin\\psql.EXE",
+  "trivy": "NOT_FOUND",
+  "clamscan": "NOT_FOUND",
+  "gh": "C:\\Program Files\\GitHub CLI\\gh.EXE",
+  "bash": "C:\\Users\\jayes\\AppData\\Local\\Microsoft\\WindowsApps\\bash.EXE",
+  "mypy": "NOT_FOUND",
+  "pyright": "NOT_FOUND",
+  "npm": "C:\\Program Files\\nodejs\\npm.CMD",
+  "node": "C:\\Program Files\\nodejs\\node.EXE",
+  "python:playwright": "NOT_FOUND",
+  "python:streamlit": "available",
+  "python:boto3": "NOT_FOUND",
+  "python:psycopg": "available"
+}
